@@ -111,7 +111,21 @@ bool IsHandInteractionComponent(const std::string& componentPath)
            componentPath == "grasp_ext/value" ||
            componentPath == "aim_activate_ext/ready_ext" ||
            componentPath == "aim_activate_ext/value" ||
-           componentPath == "grip_surface/pose";
+           componentPath == "grip_surface/pose" ||
+           componentPath.ends_with("_meta/click"); // XR_META_hand_tracking_microgestures
+}
+
+// Link para Mac: XR_META_hand_tracking_microgestures components -> the client's button bits (0 if not one).
+uint32_t MicrogestureBit(InputManager::Hand hand, const std::string& componentPath)
+{
+    using namespace oxr::protocol;
+    const bool left = hand == InputManager::Hand::Left;
+    if (componentPath == "swipe_left_meta/click") return left ? BUTTON_LEFT_MICRO_SWIPE_LEFT : BUTTON_RIGHT_MICRO_SWIPE_LEFT;
+    if (componentPath == "swipe_right_meta/click") return left ? BUTTON_LEFT_MICRO_SWIPE_RIGHT : BUTTON_RIGHT_MICRO_SWIPE_RIGHT;
+    if (componentPath == "swipe_forward_meta/click") return left ? BUTTON_LEFT_MICRO_SWIPE_FORWARD : BUTTON_RIGHT_MICRO_SWIPE_FORWARD;
+    if (componentPath == "swipe_backward_meta/click") return left ? BUTTON_LEFT_MICRO_SWIPE_BACKWARD : BUTTON_RIGHT_MICRO_SWIPE_BACKWARD;
+    if (componentPath == "tap_thumb_meta/click") return left ? BUTTON_LEFT_MICRO_TAP_THUMB : BUTTON_RIGHT_MICRO_TAP_THUMB;
+    return 0;
 }
 
 glm::vec3 JointVec3(const InputManager::StreamingHandState& handState, size_t index)
@@ -1017,6 +1031,10 @@ bool InputManager::GetBooleanComponentForProfile(Hand hand, const std::string& c
     const bool handInteractionProfile = IsHandInteractionProfile(profilePath);
     if (handInteractionProfile)
     {
+        if (const uint32_t microBit = MicrogestureBit(hand, componentPath))
+        {
+            return (buttonState_ & microBit) != 0;
+        }
         if (componentPath == "pinch_ext/ready_ext" ||
             componentPath == "grasp_ext/ready_ext" ||
             componentPath == "aim_activate_ext/ready_ext")

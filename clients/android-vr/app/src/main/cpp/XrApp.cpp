@@ -1140,6 +1140,8 @@ bool XrApp::CreateInstance(struct android_app* app)
     };
 
     handTrackingExtensionAvailable_ = hasExtension(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+    microgesturesAvailable_ = hasExtension(XR_META_HAND_TRACKING_MICROGESTURES_EXTENSION_NAME) &&
+                              hasExtension(XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
     foveationAvailable_ = hasExtension(XR_FB_FOVEATION_EXTENSION_NAME);
     passthroughExtensionAvailable_ = hasExtension(XR_FB_PASSTHROUGH_EXTENSION_NAME);
     foveationConfigurationAvailable_ = hasExtension(XR_FB_FOVEATION_CONFIGURATION_EXTENSION_NAME);
@@ -1205,6 +1207,12 @@ bool XrApp::CreateInstance(struct android_app* app)
         {
             extensions.push_back(spatialExtension);
         }
+    }
+    // Link para Mac: microgestures are relayed to the runtime as button bits.
+    if (microgesturesAvailable_)
+    {
+        extensions.push_back(XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
+        extensions.push_back(XR_META_HAND_TRACKING_MICROGESTURES_EXTENSION_NAME);
     }
     // Link para Mac: real room depth for ray casts in the Editor (relayed over the camera channel).
     if (hasExtension(EnvironmentDepth::ExtensionName()))
@@ -1961,6 +1969,47 @@ bool XrApp::SetupActions()
     {
         LOGE("No controller interaction profile accepted");
         return false;
+    }
+
+    // Link para Mac: microgestures (XR_META_hand_tracking_microgestures extends hand_interaction_ext).
+    if (microgesturesAvailable_)
+    {
+        static const char* kNames[5] = {"micro_swipe_left", "micro_swipe_right", "micro_swipe_forward",
+                                        "micro_swipe_backward", "micro_tap_thumb"};
+        static const char* kPaths[5] = {"swipe_left_meta", "swipe_right_meta", "swipe_forward_meta",
+                                        "swipe_backward_meta", "tap_thumb_meta"};
+        std::vector<XrActionSuggestedBinding> microBindings;
+        for (int g = 0; g < 5; ++g)
+        {
+            XrActionCreateInfo microInfo = {XR_TYPE_ACTION_CREATE_INFO};
+            microInfo.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
+            strncpy(microInfo.actionName, kNames[g], XR_MAX_ACTION_NAME_SIZE);
+            strncpy(microInfo.localizedActionName, kNames[g], XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+            microInfo.countSubactionPaths = 2;
+            microInfo.subactionPaths = handPaths_;
+            if (XR_FAILED(xrCreateAction(actionSet_, &microInfo, &microgestureActions_[g])))
+            {
+                microgestureActions_[g] = XR_NULL_HANDLE;
+                continue;
+            }
+            for (const char* hand : {"left", "right"})
+            {
+                char path[128];
+                snprintf(path, sizeof(path), "/user/hand/%s/input/%s/click", hand, kPaths[g]);
+                XrPath xrPath = XR_NULL_PATH;
+                if (XR_SUCCEEDED(xrStringToPath(instance_, path, &xrPath)))
+                    microBindings.push_back({microgestureActions_[g], xrPath});
+            }
+        }
+        XrPath handProfile = XR_NULL_PATH;
+        xrStringToPath(instance_, "/interaction_profiles/ext/hand_interaction_ext", &handProfile);
+        XrInteractionProfileSuggestedBinding microSuggested = {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+        microSuggested.interactionProfile = handProfile;
+        microSuggested.suggestedBindings = microBindings.data();
+        microSuggested.countSuggestedBindings = static_cast<uint32_t>(microBindings.size());
+        const XrResult microResult = xrSuggestInteractionProfileBindings(instance_, &microSuggested);
+        LOGI("Microgesture bindings (%zu) on hand_interaction_ext: %d", microBindings.size(), microResult);
+        if (XR_FAILED(microResult)) microgesturesAvailable_ = false;
     }
 
     // Create grip pose spaces for each hand
@@ -5669,6 +5718,37 @@ protocol::TrackingPacket XrApp::BuildTrackingPacket(XrTime predictedDisplayTime)
     if (readBooleanAction(menuAction_, handPaths_[0]))
     {
         buttons |= protocol::BUTTON_MENU;
+    }
+    // Link para Mac: microgestures. Each recognized gesture (a rising edge) is held for ~120 ms in the packet.
+    if (microgesturesAvailable_)
+    {
+        static const uint32_t kBits[2][5] = {
+            {protocol::BUTTON_LEFT_MICRO_SWIPE_LEFT, protocol::BUTTON_LEFT_MICRO_SWIPE_RIGHT,
+             protocol::BUTTON_LEFT_MICRO_SWIPE_FORWARD, protocol::BUTTON_LEFT_MICRO_SWIPE_BACKWARD,
+             protocol::BUTTON_LEFT_MICRO_TAP_THUMB},
+            {protocol::BUTTON_RIGHT_MICRO_SWIPE_LEFT, protocol::BUTTON_RIGHT_MICRO_SWIPE_RIGHT,
+             protocol::BUTTON_RIGHT_MICRO_SWIPE_FORWARD, protocol::BUTTON_RIGHT_MICRO_SWIPE_BACKWARD,
+             protocol::BUTTON_RIGHT_MICRO_TAP_THUMB}};
+        const auto now = std::chrono::steady_clock::now();
+        for (int hand = 0; hand < 2; ++hand)
+        {
+            for (int g = 0; g < 5; ++g)
+            {
+                if (microgestureActions_[g] == XR_NULL_HANDLE) continue;
+                XrActionStateGetInfo getInfo = {XR_TYPE_ACTION_STATE_GET_INFO};
+                getInfo.action = microgestureActions_[g];
+                getInfo.subactionPath = handPaths_[hand];
+                XrActionStateBoolean state = {XR_TYPE_ACTION_STATE_BOOLEAN};
+                if (XR_SUCCEEDED(xrGetActionStateBoolean(session_, &getInfo, &state)) && state.isActive &&
+                    state.currentState && state.changedSinceLastSync)
+                {
+                    microgestureUntil_[hand][g] = now + std::chrono::milliseconds(120);
+                    LOGI("Microgesture %s hand %d", g == 0 ? "swipe_left" : g == 1 ? "swipe_right" : g == 2 ? "swipe_forward"
+                                                    : g == 3 ? "swipe_backward" : "tap_thumb", hand);
+                }
+                if (now < microgestureUntil_[hand][g]) buttons |= kBits[hand][g];
+            }
+        }
     }
     packet.buttonState = buttons;
 

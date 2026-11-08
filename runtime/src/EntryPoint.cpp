@@ -291,6 +291,8 @@ static std::vector<ExtensionInfo> GetSupportedExtensionInfos()
 #ifdef XR_META_touch_controller_plus
         {XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME, XR_META_touch_controller_plus_SPEC_VERSION},
 #endif
+        // Link para Mac: thumb microgestures relayed from the headset as button bits (InputManager).
+        {XR_META_HAND_TRACKING_MICROGESTURES_EXTENSION_NAME, XR_META_hand_tracking_microgestures_SPEC_VERSION},
     };
     // Link para Mac: anchors, persistence and Scene are proxied to the headset (SpatialEntity.cpp).
     for (const auto& [name, version] : oxrsys::spatial_entity::Extensions())
@@ -1741,6 +1743,16 @@ static bool IsValidBindingPathForProfile(const Instance* instance,
         {
             return (topLevelPath == "/user/hand/left" || topLevelPath == "/user/hand/right") &&
                    instance->GetApiVersion() >= XR_MAKE_VERSION(1, 1, 0);
+        }
+        // Link para Mac: XR_META_hand_tracking_microgestures extends this profile.
+        static const std::unordered_set<std::string> microgestureComponents = {
+            "swipe_left_meta/click", "swipe_right_meta/click", "swipe_forward_meta/click",
+            "swipe_backward_meta/click", "tap_thumb_meta/click",
+        };
+        if (microgestureComponents.contains(componentPath))
+        {
+            return (topLevelPath == "/user/hand/left" || topLevelPath == "/user/hand/right") &&
+                   instance->IsExtensionEnabled(XR_META_HAND_TRACKING_MICROGESTURES_EXTENSION_NAME);
         }
         return (topLevelPath == "/user/hand/left" || topLevelPath == "/user/hand/right") &&
                supportedComponents.contains(componentPath);

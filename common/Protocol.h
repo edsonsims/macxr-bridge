@@ -414,6 +414,18 @@ enum ButtonFlags : uint32_t
     BUTTON_FRAME_RIGHT_MENU = 0x80000,
     BUTTON_LEFT_BUMPER = 0x100000,
     BUTTON_RIGHT_BUMPER = 0x200000,
+    // Link para Mac: XR_META_hand_tracking_microgestures (thumb swipes/tap on the index). The client sets a bit for
+    // ~120 ms per recognized gesture, so the runtime's boolean reads true for a few frames: one press per gesture.
+    BUTTON_LEFT_MICRO_SWIPE_LEFT = 1u << 22,
+    BUTTON_LEFT_MICRO_SWIPE_RIGHT = 1u << 23,
+    BUTTON_LEFT_MICRO_SWIPE_FORWARD = 1u << 24,
+    BUTTON_LEFT_MICRO_SWIPE_BACKWARD = 1u << 25,
+    BUTTON_LEFT_MICRO_TAP_THUMB = 1u << 26,
+    BUTTON_RIGHT_MICRO_SWIPE_LEFT = 1u << 27,
+    BUTTON_RIGHT_MICRO_SWIPE_RIGHT = 1u << 28,
+    BUTTON_RIGHT_MICRO_SWIPE_FORWARD = 1u << 29,
+    BUTTON_RIGHT_MICRO_SWIPE_BACKWARD = 1u << 30,
+    BUTTON_RIGHT_MICRO_TAP_THUMB = 1u << 31,
 };
 
 enum TrackingFlags : uint32_t
