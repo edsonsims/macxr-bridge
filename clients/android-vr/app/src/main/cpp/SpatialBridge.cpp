@@ -784,6 +784,14 @@ void SpatialBridge::HandleRequest(Op op, uint32_t requestId, const uint8_t* payl
                 if (XR_SUCCEEDED(resp.result))
                 {
                     const uint32_t count = std::min<uint32_t>(labels.bufferCountOutput, sizeof(buffer));
+                    static int logged = 0;
+                    if (logged < 6)
+                    {
+                        ++logged;
+                        LOGI("Semantic labels raw: count=%u last=%d text='%.*s' (recognized %u bytes, flags 0x%llx)", count,
+                             count > 0 ? static_cast<int>(static_cast<unsigned char>(buffer[count - 1])) : -1,
+                             static_cast<int>(count), buffer, req.labelsByteCount, (unsigned long long)req.supportFlags);
+                    }
                     // bufferCountOutput includes the terminator.
                     resp.byteCount = count > 0 && buffer[count - 1] == '\0' ? count - 1 : count;
                     std::memcpy(resp.labels, buffer, resp.byteCount);

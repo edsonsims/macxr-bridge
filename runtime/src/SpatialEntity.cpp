@@ -835,11 +835,17 @@ XRAPI_ATTR XrResult XRAPI_CALL OxrGetSpaceSemanticLabelsFB(XrSession session, Xr
         return static_cast<XrResult>(resp.result);
     }
     uint32_t count = std::min<uint32_t>(resp.byteCount, sp::MAX_SEMANTIC_LABELS_BYTES);
-    // Defensive: keep exactly one terminating '\0' whatever the client sent (it strips its own).
     while (count > 0 && resp.labels[count - 1] == '\0') --count;
+    // Match the Quest runtime: bufferCountOutput is the label length WITHOUT the terminator ("TABLE" -> 5,
+    // measured on Quest 3). MRUK builds std::string(buffer, bufferCountOutput); counting the '\0' made every
+    // label "TABLE\0" -> "Unrecognized label" -> UNKNOWN. Still terminate the buffer when there is room.
     std::vector<char> text(resp.labels, resp.labels + count);
-    text.push_back('\0');
-    return FillArray(labels->bufferCapacityInput, &labels->bufferCountOutput, labels->buffer, text);
+    const XrResult result = FillArray(labels->bufferCapacityInput, &labels->bufferCountOutput, labels->buffer, text);
+    if (XR_SUCCEEDED(result) && labels->buffer != nullptr && labels->bufferCapacityInput > count)
+    {
+        labels->buffer[count] = '\0';
+    }
+    return result;
 }
 
 XRAPI_ATTR XrResult XRAPI_CALL OxrGetSpaceBoundary2DFB(XrSession session, XrSpace space, XrBoundary2DFB* boundary)
