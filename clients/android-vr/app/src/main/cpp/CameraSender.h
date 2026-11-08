@@ -32,6 +32,9 @@ public:
                    float fx, float fy, float cx, float cy,
                    const XrPosef& headFromCamera, int64_t captureTimeNs);
 
+    // Sends one environment-depth image (uint16 per pixel). Blocks on the socket: call from a worker thread.
+    void PushDepth(const oxr::protocol::camera::DepthHeader& header, const uint16_t* pixels);
+
 private:
     CameraSender() = default;
     bool SendAll(const void* data, size_t size);

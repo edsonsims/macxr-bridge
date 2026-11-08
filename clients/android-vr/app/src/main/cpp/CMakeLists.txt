@@ -69,6 +69,7 @@ add_library(oxrsys_android SHARED
     SpatialBridge.cpp
     SpatialPermission.cpp
     CameraSender.cpp
+    EnvironmentDepth.cpp
 )
 
 target_include_directories(oxrsys_android PRIVATE

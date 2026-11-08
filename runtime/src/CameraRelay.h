@@ -27,8 +27,13 @@ public:
     // Returns the FrameInfo; info.valid = 0 when nothing available or capacity too small.
     oxr::protocol::camera::FrameInfo GetLatest(uint8_t* dst, uint32_t dstCapacity, uint32_t lastFrameId);
 
+    // Latest environment depth (uint16 per pixel, row 0 = bottom). Copies into dst when newer than
+    // lastFrameId and dstCount (in pixels) is large enough; dst == nullptr is a probe.
+    oxr::protocol::camera::DepthInfo GetLatestDepth(uint16_t* dst, uint32_t dstCount, uint32_t lastFrameId);
+
 private:
     CameraRelay() = default;
+    void OnDepth(const uint8_t* payload, size_t size);
 
     // Decodes a JPEG buffer into rgba (width*height*4). Returns false on failure.
     bool DecodeJpeg(const uint8_t* jpeg, size_t size, uint32_t width, uint32_t height, std::vector<uint8_t>& rgba);
@@ -39,4 +44,7 @@ private:
     oxr::protocol::camera::FrameInfo info_ = {};
     uint32_t nextFrameId_ = 1;
     oxr::protocol::camera::Pose headFromCamera_ = {{0, 0, 0, 1}, {0, 0, 0}};
+    std::vector<uint16_t> depth_;
+    oxr::protocol::camera::DepthInfo depthInfo_ = {};
+    uint32_t nextDepthId_ = 1;
 };

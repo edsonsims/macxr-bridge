@@ -23,6 +23,7 @@
 #include "QuestShellInteraction.h"
 #include "SpatialBridge.h"
 #include "CameraSender.h"
+#include "EnvironmentDepth.h"
 #include "TrackingSender.h"
 #include "VideoDecoder.h"
 
@@ -352,6 +353,7 @@ private:
 
     // Link para Mac: anchors/scene proxy served to the runtime over the spatial channel.
     SpatialBridge spatialBridge_;
+    EnvironmentDepth environmentDepth_;
     std::vector<const char*> enabledExtensionNames_;
 
     // Link para Mac: the OpenXR app's XR_FB_passthrough intent relayed by the runtime. While the app

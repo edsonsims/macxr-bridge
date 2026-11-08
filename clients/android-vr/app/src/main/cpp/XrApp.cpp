@@ -1202,6 +1202,11 @@ bool XrApp::CreateInstance(struct android_app* app)
             extensions.push_back(spatialExtension);
         }
     }
+    // Link para Mac: real room depth for ray casts in the Editor (relayed over the camera channel).
+    if (hasExtension(EnvironmentDepth::ExtensionName()))
+    {
+        extensions.push_back(EnvironmentDepth::ExtensionName());
+    }
     enabledExtensionNames_ = extensions;
     LOGI("Enabled OpenXR extensions: %s", JoinExtensionNames(extensions).c_str());
 
@@ -1521,6 +1526,12 @@ bool XrApp::CreateSession()
     }
 
     spatialBridge_.Initialize(instance_, session_, appSpace_, enabledExtensionNames_);
+    {
+        bool depthEnabled = false;
+        for (const char* name : enabledExtensionNames_)
+            if (std::strcmp(name, EnvironmentDepth::ExtensionName()) == 0) depthEnabled = true;
+        environmentDepth_.Initialize(instance_, session_, depthEnabled);
+    }
 
     if (!InitializeDisplayRefreshRate(kPreferredDisplayRefreshRateHz))
     {
@@ -4033,6 +4044,14 @@ void XrApp::RunFrame()
             BuildTrackingPacket(frameState.predictedDisplayTime);
         spatialBridge_.SetFrameTime(frameState.predictedDisplayTime);
         spatialBridge_.SendPosesIfDue();
+        {
+            XrPosef headPose = views_[0].pose;
+            headPose.position = {(views_[0].pose.position.x + views_[1].pose.position.x) * 0.5f,
+                                 (views_[0].pose.position.y + views_[1].pose.position.y) * 0.5f,
+                                 (views_[0].pose.position.z + views_[1].pose.position.z) * 0.5f};
+            environmentDepth_.Update(appSpace_, frameState.predictedDisplayTime, headPose,
+                                     oxr::spatial_permission::IsSceneGranted());
+        }
 
         // Render to swapchains
         const bool renderedVideo = RenderFrame(frameState.predictedDisplayTime);
@@ -5758,6 +5777,7 @@ void XrApp::Shutdown()
     StopNetworking();
     CloseCameraSocket();
     spatialBridge_.Stop();
+    environmentDepth_.Shutdown();
     ShutdownPassthrough();
     ShutdownHandTracking();
     ShutdownFoveation();

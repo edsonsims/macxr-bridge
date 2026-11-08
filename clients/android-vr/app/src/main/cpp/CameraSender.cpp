@@ -129,6 +129,26 @@ void CameraSender::PushFrame(const uint8_t* jpeg, int length, int width, int hei
     }
 }
 
+void CameraSender::PushDepth(const cam::DepthHeader& header, const uint16_t* pixels)
+{
+    if (socket_.load() < 0 || pixels == nullptr || header.payloadSize == 0) return;
+    std::lock_guard<std::mutex> lock(sendMutex_);
+    if (socket_.load() < 0) return;
+
+    protocol::TcpRecordHeader rec = {};
+    rec.type = protocol::TcpRecordType::Camera;
+    rec.payloadSize = static_cast<uint32_t>(sizeof(cam::MsgHeader) + sizeof(cam::DepthHeader) + header.payloadSize);
+    cam::MsgHeader mh = {}; mh.kind = cam::MsgKind::Depth;
+    mh.payloadSize = static_cast<uint32_t>(sizeof(cam::DepthHeader) + header.payloadSize);
+    if (!(SendAll(&rec, sizeof(rec)) && SendAll(&mh, sizeof(mh)) && SendAll(&header, sizeof(header)) &&
+          SendAll(pixels, header.payloadSize)))
+    {
+        LOGW("Depth send failed; detaching");
+        socket_.store(-1);
+        helloSent_ = false;
+    }
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_oculus_HeadsetCamera_nativePushCameraFrame(JNIEnv* env, jclass, jbyteArray jpeg, jint length,
                                                     jint width, jint height,

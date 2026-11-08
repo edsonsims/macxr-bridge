@@ -60,6 +60,7 @@ void CameraRelay::SetConnected(bool connected)
     if (!connected)
     {
         info_.valid = 0;
+        depthInfo_.valid = 0;
     }
     spdlog::info("CameraRelay: camera channel {}", connected ? "connected" : "disconnected");
 }
@@ -124,6 +125,11 @@ void CameraRelay::OnMessage(const uint8_t* data, size_t size)
         }
         return;
     }
+    if (header.kind == MsgKind::Depth)
+    {
+        OnDepth(payload, payloadSize);
+        return;
+    }
     if (header.kind != MsgKind::Frame || payloadSize < sizeof(FrameHeader)) return;
     FrameHeader fh = {};
     std::memcpy(&fh, payload, sizeof(fh));
@@ -156,6 +162,57 @@ void CameraRelay::OnMessage(const uint8_t* data, size_t size)
     info_.cx = fh.intrinsics.cx; info_.cy = fh.intrinsics.cy;
     info_.cameraPose = cameraPose;
     info_.captureTimeNs = fh.captureTimeNs;
+}
+
+void CameraRelay::OnDepth(const uint8_t* payload, size_t size)
+{
+    if (size < sizeof(DepthHeader)) return;
+    DepthHeader dh = {};
+    std::memcpy(&dh, payload, sizeof(dh));
+    const size_t pixels = static_cast<size_t>(dh.width) * dh.height;
+    if (pixels == 0 || dh.payloadSize != pixels * sizeof(uint16_t) || size != sizeof(DepthHeader) + dh.payloadSize) return;
+    std::vector<uint16_t> depth(pixels);
+    std::memcpy(depth.data(), payload + sizeof(DepthHeader), dh.payloadSize);
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    depth_.swap(depth);
+    depthInfo_.width = dh.width;
+    depthInfo_.height = dh.height;
+    depthInfo_.valid = 1;
+    depthInfo_.frameId = nextDepthId_++;
+    depthInfo_.nearZ = dh.nearZ;
+    depthInfo_.farZ = dh.farZ;
+    depthInfo_.headPose = dh.headPose;
+    depthInfo_.viewPose = dh.viewPose;
+    depthInfo_.fov = dh.fov;
+    depthInfo_.displayTimeNs = dh.displayTimeNs;
+    if (depthInfo_.frameId == 1 || depthInfo_.frameId % 300 == 0)
+    {
+        spdlog::info("CameraRelay: depth #{} {}x{} near={:.3f} far={}", depthInfo_.frameId, dh.width, dh.height,
+                     dh.nearZ, dh.farZ);
+    }
+}
+
+DepthInfo CameraRelay::GetLatestDepth(uint16_t* dst, uint32_t dstCount, uint32_t lastFrameId)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    DepthInfo out = depthInfo_;
+    if (!depthInfo_.valid || !connected_ || depthInfo_.frameId == lastFrameId)
+    {
+        out.valid = 0;
+        return out;
+    }
+    if (dst != nullptr)
+    {
+        const uint32_t need = depthInfo_.width * depthInfo_.height;
+        if (dstCount < need || depth_.size() < need)
+        {
+            out.valid = 0;
+            return out;
+        }
+        std::memcpy(dst, depth_.data(), need * sizeof(uint16_t));
+    }
+    return out;
 }
 
 FrameInfo CameraRelay::GetLatest(uint8_t* dst, uint32_t dstCapacity, uint32_t lastFrameId)
@@ -198,6 +255,17 @@ int oxrsys_camera_get_latest(unsigned char* dst, unsigned int dstCapacity, unsig
                              oxr::protocol::camera::FrameInfo* outInfo)
 {
     oxr::protocol::camera::FrameInfo info = CameraRelay::Get().GetLatest(dst, dstCapacity, lastFrameId);
+    if (outInfo != nullptr) *outInfo = info;
+    return info.valid;
+}
+
+// Copies the latest environment depth (uint16 per pixel, row 0 = bottom) into dst if newer than
+// lastFrameId. Writes the DepthInfo into outInfo. Returns outInfo.valid.
+__attribute__((visibility("default")))
+int oxrsys_depth_get_latest(unsigned short* dst, unsigned int dstCount, unsigned int lastFrameId,
+                            oxr::protocol::camera::DepthInfo* outInfo)
+{
+    oxr::protocol::camera::DepthInfo info = CameraRelay::Get().GetLatestDepth(dst, dstCount, lastFrameId);
     if (outInfo != nullptr) *outInfo = info;
     return info.valid;
 }

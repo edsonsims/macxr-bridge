@@ -27,6 +27,7 @@ enum class MsgKind : uint16_t
     Hello = 1,  // client -> runtime, once: which eye, resolution, framerate
     Frame = 2,  // client -> runtime: a JPEG frame + pose/intrinsics
     Config = 3, // runtime -> client: enable/disable, target fps
+    Depth = 4,  // client -> runtime: one eye of XR_META_environment_depth (uint16 normalized depth)
 };
 
 enum PixelFormat : uint32_t
@@ -76,6 +77,26 @@ struct FrameHeader
     Intrinsics intrinsics;   // at this frame's resolution
 };
 
+struct Fov { float angleLeft, angleRight, angleUp, angleDown; }; // radians, as XrFovf
+
+// Environment depth (XR_META_environment_depth) for one eye, read back on the headset. Each pixel
+// is the depth buffer value d in [0,1] scaled to uint16 (d * 65535). Row 0 is the BOTTOM of the
+// image (OpenGL convention, toward fov.angleDown). Linear distance along the view's -Z axis:
+//   ndc = 2d - 1;  z = farZ finite ? 2*far*near / ((far+near) - ndc*(far-near)) : near / (1 - d)
+struct DepthHeader
+{
+    uint32_t width;
+    uint32_t height;
+    uint32_t payloadSize;   // width * height * 2 bytes follow this header
+    uint32_t eye;           // 0 = left
+    float nearZ;
+    float farZ;             // +inf for an infinite far plane
+    int64_t displayTimeNs;  // XrTime the depth was located for
+    Pose headPose;          // head pose at displayTime (client STAGE), same space as viewPose
+    Pose viewPose;          // depth view pose (client STAGE)
+    Fov fov;
+};
+
 struct Config
 {
     uint32_t enabled;
@@ -93,6 +114,22 @@ struct FrameInfo
     Pose cameraPose;         // world (STAGE) pose: headPose * headFromCamera
     int64_t captureTimeNs;
 };
+
+// Latest depth for Unity (C export oxrsys_depth_get_latest). Layout is ABI-stable: 104 bytes.
+struct DepthInfo
+{
+    uint32_t width;
+    uint32_t height;
+    uint32_t valid;
+    uint32_t frameId;
+    float nearZ;
+    float farZ;
+    Pose headPose;          // client STAGE
+    Pose viewPose;          // client STAGE
+    Fov fov;
+    int64_t displayTimeNs;
+};
+static_assert(sizeof(DepthInfo) == 104, "DepthInfo layout is shared with C#");
 
 } // namespace camera
 } // namespace protocol
