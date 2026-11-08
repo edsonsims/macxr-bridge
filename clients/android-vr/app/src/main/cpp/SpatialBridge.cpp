@@ -408,6 +408,8 @@ uint64_t SpatialBridge::TakeAsyncRequestId(XrAsyncRequestIdFB clientId, bool era
 
 void SpatialBridge::HandleRequest(Op op, uint32_t requestId, const uint8_t* payload, size_t size)
 {
+    lastRequestNs_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
     const uint8_t* cursor = payload;
     size_t remaining = size;
     sp::RespResult simple = {};

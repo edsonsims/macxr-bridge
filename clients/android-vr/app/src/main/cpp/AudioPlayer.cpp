@@ -48,13 +48,22 @@ bool AudioPlayer::OpenLocked(uint32_t channels, uint32_t sampleRate)
     }
     channels_ = channels;
     sampleRate_ = sampleRate;
+    outFormat_ = AAudioStream_getFormat(stream_);
+    outChannels_ = static_cast<uint32_t>(std::max(1, AAudioStream_getChannelCount(stream_)));
+    if (outFormat_ != AAUDIO_FORMAT_PCM_I16 && outFormat_ != AAUDIO_FORMAT_PCM_FLOAT)
+    {
+        LOGW("AAudio picked format %d; not supported", static_cast<int>(outFormat_));
+        CloseLocked();
+        return false;
+    }
     ring_.assign(static_cast<size_t>(sampleRate) * channels * kCapacityMs / 1000, 0);
     readPos_ = 0;
     filled_ = 0;
     primed_ = false;
     result = AAudioStream_requestStart(stream_);
-    LOGI("Audio stream %u Hz x%u (device rate %d, burst %d) start=%s", sampleRate, channels,
-         AAudioStream_getSampleRate(stream_), AAudioStream_getFramesPerBurst(stream_), AAudio_convertResultToText(result));
+    LOGI("Audio stream %u Hz x%u -> device %d Hz x%u %s (burst %d) start=%s", sampleRate, channels,
+         AAudioStream_getSampleRate(stream_), outChannels_, outFormat_ == AAUDIO_FORMAT_PCM_FLOAT ? "float" : "s16",
+         AAudioStream_getFramesPerBurst(stream_), AAudio_convertResultToText(result));
     return result == AAUDIO_OK;
 }
 
@@ -68,6 +77,7 @@ void AudioPlayer::CloseLocked()
     }
     channels_ = 0;
     sampleRate_ = 0;
+    outChannels_ = 0;
     filled_ = 0;
     readPos_ = 0;
 }
@@ -104,35 +114,42 @@ void AudioPlayer::Push(const int16_t* samples, uint32_t frames, uint32_t channel
     }
 }
 
-aaudio_data_callback_result_t AudioPlayer::DataCallback(AAudioStream*, void* user, void* audioData, int32_t numFrames)
+aaudio_data_callback_result_t AudioPlayer::DataCallback(AAudioStream* stream, void* user, void* audioData, int32_t numFrames)
 {
     auto* self = static_cast<AudioPlayer*>(user);
-    auto* out = static_cast<int16_t*>(audioData);
+    // Always fill the WHOLE buffer in the stream's real format, starting from silence.
+    const aaudio_format_t format = AAudioStream_getFormat(stream);
+    const uint32_t outChannels = static_cast<uint32_t>(std::max(1, AAudioStream_getChannelCount(stream)));
+    const size_t bytesPerSample = format == AAUDIO_FORMAT_PCM_FLOAT ? sizeof(float) : sizeof(int16_t);
+    std::memset(audioData, 0, static_cast<size_t>(numFrames) * outChannels * bytesPerSample);
+
     std::unique_lock<std::mutex> lock(self->mutex_, std::try_to_lock);
-    const size_t want = static_cast<size_t>(numFrames) * std::max<uint32_t>(self->channels_, 1);
-    if (!lock.owns_lock() || self->channels_ == 0)
-    {
-        std::memset(out, 0, want * sizeof(int16_t));
-        return AAUDIO_CALLBACK_RESULT_CONTINUE;
-    }
-    const size_t targetSamples = static_cast<size_t>(self->sampleRate_) * self->channels_ * kTargetMs / 1000;
-    if (!self->primed_ && self->filled_ < targetSamples)
-    {
-        std::memset(out, 0, want * sizeof(int16_t));
-        return AAUDIO_CALLBACK_RESULT_CONTINUE;
-    }
+    if (!lock.owns_lock() || self->channels_ == 0 || self->ring_.empty()) return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    const uint32_t inChannels = self->channels_;
+    const size_t targetSamples = static_cast<size_t>(self->sampleRate_) * inChannels * kTargetMs / 1000;
+    if (!self->primed_ && self->filled_ < targetSamples) return AAUDIO_CALLBACK_RESULT_CONTINUE;
     self->primed_ = true;
+
     const size_t capacity = self->ring_.size();
-    const size_t take = std::min(want, self->filled_);
-    for (size_t i = 0; i < take; ++i)
+    const size_t availableFrames = self->filled_ / inChannels;
+    const size_t frames = std::min(static_cast<size_t>(numFrames), availableFrames);
+    auto* outF = static_cast<float*>(audioData);
+    auto* outS = static_cast<int16_t*>(audioData);
+    for (size_t f = 0; f < frames; ++f)
     {
-        out[i] = self->ring_[(self->readPos_ + i) % capacity];
+        const size_t base = self->readPos_ + f * inChannels;
+        for (uint32_t c = 0; c < outChannels; ++c)
+        {
+            const int16_t v = self->ring_[(base + std::min(c, inChannels - 1)) % capacity];
+            if (format == AAUDIO_FORMAT_PCM_FLOAT) outF[f * outChannels + c] = v / 32768.0f;
+            else outS[f * outChannels + c] = v;
+        }
     }
-    self->readPos_ = (self->readPos_ + take) % capacity;
-    self->filled_ -= take;
-    if (take < want)
+    const size_t taken = frames * inChannels;
+    self->readPos_ = (self->readPos_ + taken) % capacity;
+    self->filled_ -= taken;
+    if (frames < static_cast<size_t>(numFrames))
     {
-        std::memset(out + take, 0, (want - take) * sizeof(int16_t));
         self->primed_ = false; // refill before resuming, so we do not crackle on every packet
         if (++self->underruns_ <= 3 || self->underruns_ % 200 == 0) LOGI("Audio underrun (x%u)", self->underruns_);
     }

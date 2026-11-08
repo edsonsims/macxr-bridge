@@ -4487,9 +4487,11 @@ bool XrApp::RenderFrame(XrTime predictedDisplayTime)
         }
         else if (hasVideoTexture_)
         {
-            // Check if the stream has been lost (no new frames for 2 seconds)
+            // Check if the stream has been lost (no new frames for 2 seconds). Link para Mac: during a room load the
+            // Editor waits on spatial round trips (seconds over Wi-Fi) and sends no video; allow 10 s then.
             auto elapsed = std::chrono::steady_clock::now() - lastVideoFrameTime_;
-            if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= 2)
+            const int64_t lostAfterSeconds = spatialBridge_.BusyWithinNs(3'000'000'000LL) ? 10 : 2;
+            if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >= lostAfterSeconds)
             {
                 // Stream lost (Godot closed, Mac disconnected, etc.)
                 hasVideoTexture_ = false;

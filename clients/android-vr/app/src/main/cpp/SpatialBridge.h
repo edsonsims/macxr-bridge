@@ -12,6 +12,7 @@
 #include <openxr/openxr.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -35,6 +36,15 @@ public:
     // Stops serving; the caller closes the socket. Spaces created for the runtime are destroyed.
     void Stop();
     bool IsRunning() const { return running_.load(); }
+    // Link para Mac: true while the runtime is sending spatial requests (a room load). Over Wi-Fi every request is a
+    // network round trip and the Editor's main thread waits on them, so video can pause for a few seconds.
+    bool BusyWithinNs(int64_t windowNs) const
+    {
+        const int64_t last = lastRequestNs_.load();
+        const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        return last != 0 && now - last < windowNs;
+    }
 
     // Main (XR) thread hooks.
     void SetFrameTime(XrTime predictedDisplayTime) { frameTime_.store(predictedDisplayTime); }
@@ -49,6 +59,7 @@ private:
 
     void ReaderThread(int socket);
     void HandleRequest(Op op, uint32_t requestId, const uint8_t* payload, size_t size);
+    std::atomic<int64_t> lastRequestNs_{0};
     bool SendMsg(MsgKind kind, Op op, uint32_t requestId, const void* payload, size_t size);
     bool Respond(uint32_t requestId, const void* payload, size_t size);
     bool SendEvent(Op op, const void* payload, size_t size);

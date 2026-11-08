@@ -31,8 +31,13 @@ private:
 
     std::mutex mutex_;
     AAudioStream* stream_ = nullptr;
-    uint32_t channels_ = 0;
+    uint32_t channels_ = 0;        // of the PCM we receive
     uint32_t sampleRate_ = 0;
+    // What the opened stream actually uses: AAudio may pick another format or channel count than requested, and
+    // the callback must fill the whole buffer in that format (writing s16 into a float buffer leaves half of it
+    // uninitialized — loud noise).
+    aaudio_format_t outFormat_ = AAUDIO_FORMAT_PCM_I16;
+    uint32_t outChannels_ = 0;
     // Ring buffer of interleaved samples.
     std::vector<int16_t> ring_;
     size_t readPos_ = 0;   // in samples
