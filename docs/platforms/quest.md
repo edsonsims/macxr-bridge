@@ -1,0 +1,309 @@
+# Quest And Pico
+
+## Scope
+
+This document covers the Android headset client used with Meta Quest and PICO-class devices. It focuses on build, install, permissions, and the current runtime interaction model.
+
+## Requirements
+
+- Android SDK and NDK
+- Java 17
+- `adb`
+- Quest or PICO device in developer mode
+
+See [install.md](../install.md) for the recommended package list and `sdkmanager` commands.
+
+## Build And Install
+
+For fast iteration while working on the headset client:
+
+```bash
+cd clients/android-vr
+./gradlew assembleDebug
+adb install app/build/outputs/apk/debug/app-debug.apk
+```
+
+For Quest sideload validation, use the stable release variant:
+
+```bash
+cd clients/android-vr
+./gradlew assembleRelease
+adb install app/build/outputs/apk/release/app-release.apk
+```
+
+`assembleRelease` is debug-signed and debuggable for sideloading, but uses the release APK name and
+Quest-stable native flags. `assembleOptimizedRelease` keeps the old non-debuggable optimized native
+profile and is intended only for diagnosing optimization-sensitive headset regressions.
+
+`clients/android-vr/local.properties` must point to the local Android SDK.
+
+## Permissions And Features
+
+Quest hand tracking requires the Android manifest to declare:
+
+- `com.oculus.permission.HAND_TRACKING`
+- optional feature `oculus.software.handtracking`
+
+If these entries are missing, the runtime can still operate, but headset-side hand joints will not be available.
+PICO runtimes expose hand tracking through their OpenXR runtime support; validate this per headset with the log matrix below because Android manifest requirements differ from Meta's Quest permission model.
+
+Quest passthrough shell mode is optional. The Android manifest declares `com.oculus.feature.PASSTHROUGH`
+with `required="false"` so the APK remains installable on PICO and on devices without passthrough.
+At runtime the client enables `XR_FB_passthrough` only when the headset advertises support and the
+passthrough objects can be created; otherwise the shell keeps the 3D grid fallback. During streaming,
+`streaming.passthrough_enabled = true` lets the server keep the Quest passthrough layer active while
+releasing only the local shell GL resources. It does not by itself expose OpenXR alpha-blend
+environment modes to desktop apps. Apps can opt into streamed alpha passthrough only when the
+advanced `streaming.app_alpha_blend_passthrough = true` setting is enabled before the OpenXR instance
+is created; normal VR apps should leave it disabled so dark reflections and black content stay
+opaque. Alpha-capable frames are marked in the video stream. The client advertises
+`CLIENT_CAPABILITY_MIXED_REALITY_ALPHA` with passthrough, and the runtime then appends each eye's
+alpha below the eyes (`VIDEO_FLAG_PACKED_ALPHA`), which the blit shader reads as the layer alpha. Packed
+alpha has half the encoded resolution; at partly transparent edges the shader scales it by each pixel's
+premultiplied colour against its 2x2 block, so coloured edges stay sharp.
+Without packed alpha, the Quest shader only applies black-key alpha when an explicit
+compatibility/debug path allows it; the default path uses protocol alpha flags and never treats
+ordinary dark pixels as transparent.
+
+This support is negotiated, not hardcoded by model name. The client advertises
+`CLIENT_CAPABILITY_MIXED_REALITY_PASSTHROUGH` only after the headset OpenXR runtime exposes
+`XR_FB_passthrough`, reports `XrSystemPassthroughPropertiesFB.supportsPassthrough`, resolves the
+required functions, and creates the passthrough/layer handles. Runtime status distinguishes the
+global `passthrough_enabled` setting from headset-reported `passthrough_supported` and the effective
+`passthrough_ready` value; support should not be inferred from the headset model name.
+
+USB diagnostics use Android's official `UsbManager` host-device intents and filters. The app requests app-level USB permission only when Android exposes a real USB device to the headset. ADB reverse streaming itself does not require or produce that app permission dialog; it may instead trigger the headset's USB debugging authorization prompt when the Mac is first authorized for ADB.
+
+## Display Refresh
+
+The runtime announces the preferred display refresh selected in Home/config. The Android client
+requests that value through `XR_FB_display_refresh_rate` when the extension is available, reads the
+active headset rate again immediately before `ClientConnect`, then reports that value in
+`ClientConnect.refreshRateHz`. Home exposes `60`, `72`, `80`, `90`, and `120` Hz. Client and server
+logs include the requested/server target and the active/negotiated rate so USB cadence mismatches can
+be diagnosed from logs.
+
+The repository still keeps a build-configured fallback used before a server is discovered. The
+default value is `72`, and you can override it per build with a Gradle property:
+
+```bash
+./gradlew assembleDebug -PoxrsysAndroidDisplayRefreshRateHz=72
+```
+
+The property is passed through Gradle into CMake as
+`OXRSYS_PREFERRED_DISPLAY_REFRESH_RATE_HZ`. Set it to a headset-supported rate such as `72`,
+`80`, `90`, or `120`. If the headset runtime does not advertise the server-requested rate, the client
+logs the mismatch and keeps the current headset refresh.
+
+## Runtime Interaction
+
+The Android client:
+
+- tries USB ADB reverse TCP first, then falls back to local-network UDP discovery when USB is unavailable
+- returns to discovery/retry automatically when the runtime or OpenXR app session stops
+- connects and advertises codec, active refresh rate, streaming capabilities, and the headset OpenXR `systemName`
+- accepts protocol v1.2 stream reconfiguration messages on USB TCP when the runtime adjusts encoded resolution in `abr_mode = "full"`
+- requests the server-announced display refresh rate when `XR_FB_display_refresh_rate` is available
+- receives encoded video frames and matches render-pose metadata to each decoded frame before projection submission
+- reuses short decode/network gaps with the configured client reprojection mode
+- drains MediaCodec output on a decoder thread so the XR frame loop only acquires the latest ready image
+- shows a local shell before video arrives, with status text, a reset button, a passthrough/3D toggle, controller laser interaction, hand laser/pinch interaction, and simple controller/hand-joint markers
+- sends head, controller, and optional hand-tracking data back to the runtime
+- reports latency measurements
+- requests keyframes when recovery is needed
+
+## Local Shell
+
+When no decoded video frame is ready, the client renders a lightweight local shell instead of the old
+blue/green standby colors. The default shell is a world-locked panel about one meter in front of the
+headset with a simple grid floor. The panel reports discovery, connection, waiting-for-video, reset,
+and connection-lost states.
+
+The `Reset` button clears the current network, decoder, and stream state and restarts the normal
+USB/WiFi discovery loop without recreating the OpenXR session. The passthrough/3D button affects only
+the local shell. Once streaming video is available, the existing video projection path remains primary.
+Local shell interactions stop running and shell GL resources are released until video is no longer
+rendered; the passthrough underlay is paused unless the server has enabled the global passthrough
+feature.
+
+Controller interaction uses an `aim_pose` laser when the runtime provides one and falls back to the
+grip pose otherwise. Hand interaction uses a laser derived from active `XR_EXT_hand_tracking` joints,
+with index-tip/thumb-tip pinch acting as the click. The shell also renders valid hand joints as small
+world-space cube markers so hand tracking can be inspected before video starts. Both controller and
+hand paths share the same ray/button hit-testing code covered by host tests.
+
+When supported by the headset, the Android viewer app can enable `XR_FB_foveation` from the
+server-announced client foveation override. This applies to the Quest/PICO viewer swapchains, not to
+the desktop OpenXR application rendered by the runtime. `auto` leaves headset foveation unmanaged
+by Home/runtime config, `off` explicitly detaches the profile, and `light`, `medium`, and `high`
+map to the runtime's FB foveation levels with dynamic foveation enabled.
+
+The video blit shader supports two server-announced post-processing modes:
+
+- foveated-encoding decompression for the runtime's ALVR-style AADT encoded stream
+- optional edge-aware shader upscaling with ALVR defaults: edge threshold `4.0`, sharpness `2.0`,
+  and an intended source factor of `1.5`
+
+The shader path does not depend on the proprietary Snapdragon SDK. It keeps the plain bilinear path
+when the server does not announce upscaling or foveated encoding. Upscaling neighbor taps are clamped
+inside each eye's visible decoded source region so edge sharpening cannot sample the other eye,
+decoder padding, or cropped-out pixels.
+
+## Client Reprojection
+
+`streaming.client_reprojection` is announced by the server and controls how the Quest client handles
+short gaps where the decoder has no new image ready:
+
+- `off`: keep the normal video path and do not apply stale-frame pose reprojection.
+- `pose`: default. Reuse the last decoded texture for short gaps and submit the projection layer with
+  the matched server render pose when available. If an exact presentation timestamp match is missing,
+  the client may use the latest render pose only when it is recent and monotone.
+- `pose_warp`: adds a conservative GLES shader correction based on the current headset orientation
+  delta from the render pose. The warp is intentionally small and disables on missing pose, old
+  frames, strong translation, recovery, or more than a few consecutive stale reuses.
+
+The first implementation does not use depth, motion vectors, Vulkan, or `XR_FB_space_warp`. All work
+stays on the existing GLES/EGL texture path, and the plain bilinear/upscaling path remains active
+when the server disables reprojection or when safety checks fail.
+
+Latency reports now include displayed frame age, stale-frame reuse count, reprojected-frame count,
+render-pose fallback count, and the active reprojection mode. The runtime writes these fields to
+`runtime_status.json` so Home can show whether smoothness problems are network/decode gaps or
+server-side pipeline latency.
+
+## ABR Signals
+
+`streaming.abr_mode` controls server-side adaptive bitrate:
+
+- `off`: no adaptive bitrate changes.
+- `bitrate`: default. Adjusts encoder bitrate only.
+- `full`: adjusts bitrate and, when the client advertises
+  `CLIENT_CAPABILITY_STREAM_RECONFIGURE` on reliable USB TCP, applies encoded-resolution profiles.
+  WiFi remains bitrate-only for live changes in this version. `quality` and `balanced` use
+  `resolution_scale`, `smooth` uses
+  `max(dynamic_resolution_min_scale, resolution_scale * 0.85)`, and `wifi_smooth` uses
+  `max(dynamic_resolution_min_scale, resolution_scale * 0.70)`.
+
+The ABR controller consumes client latency, displayed frame age, keyframe requests, video-send drops,
+encoder drops, and reprojection pressure. It lowers bitrate quickly on constrained/recovery signals
+and increases slowly after stable windows so WiFi does not oscillate between quality and recovery.
+
+Foveated encoding can reduce the encoded dimensions substantially without reducing the configured
+bitrate by the same ratio. The Android decoder therefore keeps a bounded input-buffer margin instead
+of sizing MediaCodec input buffers only from `encodedWidth * encodedHeight`, so high-bitrate IDR
+frames still fit when foveated encoding is active.
+
+If a server is discovered but no first video frame arrives, the client treats the session as lost and
+returns to the normal discovery/retry loop rather than staying on the standby/loading color screen.
+
+## Controller Profiles And Tracking Flags
+
+The client suggests bindings for:
+
+- Oculus Touch legacy
+- Meta Quest 1/Rift S Touch
+- Meta Quest 2 Touch
+- Meta Touch Plus, used by Quest 3-class controllers
+- PICO Neo3
+- PICO 4
+
+Unsupported profile suggestions are logged and ignored so the active headset runtime can select the profile it actually exposes. The macOS runtime maps the connected `ClientConnect.deviceName` to the matching canonical OpenXR profile and accepts compatible fallback bindings such as Oculus Touch for Quest and Khronos simple controller where appropriate.
+When announced by the headset runtime, the Android client also enables `XR_META_touch_controller_plus` and `XR_BD_controller_interaction` before suggesting those profile families.
+
+Expected Quest profile paths are `/interaction_profiles/oculus/touch_controller` or `/interaction_profiles/meta/touch_controller_quest_1_rift_s` for Quest 1, `/interaction_profiles/meta/touch_controller_quest_2` for Quest 2, and `/interaction_profiles/meta/touch_plus_controller` or `/interaction_profiles/meta/touch_controller_plus` for Quest 3-class Touch Plus controllers.
+
+Controller poses are valid only when the client sets `TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE` or `TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE`. The Android client now requires both an active grip-pose action and a valid `xrLocateSpace` result before setting those flags. Trigger, squeeze, thumbstick, and button values are also consumed only when their action state reports `isActive`.
+
+Hand tracking uses separate hand-active flags and remains available while controller tracking is active. The runtime keeps the current interaction profile controller-first for each hand, then falls back to `ext/hand_interaction_ext` when the controller becomes inactive. `xrSyncActions` still evaluates hand-interaction bindings while a controller is active, so hand-only apps can run, but if the same action is bound to both controller and hand-interaction profiles the controller source wins while it is active. When a controller flag is missing, the runtime leaves that hand's controller actions inactive and keeps the last valid controller pose internally instead of consuming zeroed packet fields.
+
+## Log Validation Matrix
+
+For Quest 1, Quest 2, Quest 3, PICO Neo3/PICO 3, and PICO 4, collect `adb logcat` while streaming and confirm. When `logging.quest_logcat` is enabled from Home, the runtime writes the filtered headset log to the platform state directory (`~/Library/Application Support/OXRSys/oxrsys-headset.log` on macOS). Before starting capture, the runtime clears headset logcat best-effort with a timeout and continues even if that clear fails. The equivalent manual capture is:
+
+```bash
+adb logcat -c
+adb logcat -v time -s 'OXRSys-Android:*' 'OXRSys-Network:*' 'OXRSys-Decoder:*' | tee "$HOME/Desktop/oxrsys-quest-logcat.txt"
+```
+
+Confirm:
+
+- `OpenXR system: name=...` identifies the headset model family
+- controller bindings are accepted for at least one expected profile
+- `xrSyncActions` succeeds and logs non-null profiles for active controllers
+- controller locate logs transition to active with `poseActive=1`, a non-null profile, valid locate flags, and controller-active packet flags while controllers are visible
+- runtime logs show nonzero controller poses and the expected canonical profile
+- hand tracking logs include `locateResult`, `isActive`, `validJoints`, `usable`, and `missing`; they transition active and set hand-active flags when the headset reports usable joints
+- trigger values change independently from squeeze/grab values
+- releasing controllers clears controller-active packet flags while hand-active flags can remain set
+
+## USB ADB Transport
+
+The USB path is optimized for sideloaded Quest development. The macOS SwiftUI Home app can detect an
+authorized Quest directly through the headset USB ADB interface and complete ADB authentication with
+a Home-managed host key without Android Studio, the Android SDK, or an `adb` executable. Reverse
+mappings always use a running ADB server on `127.0.0.1:5037` or an `adb` executable, because adbd
+drops them when their host connection closes. Selecting USB in Home automatically checks and configures
+the reverse mappings for the selected or single authorized device. The equivalent manual fallback
+commands are:
+
+```bash
+adb -s <serial> reverse tcp:9944 tcp:9944
+adb -s <serial> reverse tcp:9945 tcp:9945
+adb -s <serial> reverse tcp:9946 tcp:9946
+adb -s <serial> reverse tcp:9948 tcp:9948
+```
+
+With `streaming.transport = "auto"`, the Quest app connects to `127.0.0.1:9946` first. If the ADB reverse control channel answers, the client receives `ServerAnnounce`, opens TCP video, tracking, and optional spatial channels, and sends `ClientConnect`. Port `9948` is optional while spatial remains reserved; missing it must not prevent USB video/tracking streaming. If USB is unavailable, it falls back to WiFi UDP discovery while continuing to retry USB periodically so launch order is not critical. When the runtime closes the USB control/video sockets or video stalls after an app exits, the Quest client resets connection state and returns to the same retry loop without requiring the Android app to be relaunched. With `streaming.transport = "usb_adb"`, the runtime disables WiFi discovery fallback.
+
+The Quest client sends `ClientConnect.maxBitrateMbps = 0` on USB ADB, so USB quality is controlled by the server/Home bitrate setting rather than an extra headset-side cap. WiFi keeps its client-side ceiling, currently `100` Mbps for Quest-class clients; runtime status reports both `configured_bitrate_mbps` and the effective `max_bitrate_mbps` so Home can show when WiFi caps a higher server setting. It advertises H.264 and H.265 support in `ClientConnect.supportedCodecs` while keeping H.265 in `ClientConnect.preferredCodec`; `supportedCodecs = 0` remains the legacy H.265-only behavior for older clients.
+
+The runtime configures accepted USB TCP sockets with `TCP_NODELAY`, `SO_NOSIGPIPE` where available, and a bounded send timeout. Encoded video is handed to a bounded sender queue before TCP writes, so socket backpressure cannot run inside the VideoToolbox callback. If a TCP video send fails or times out, the runtime disables the stale TCP video dispatch path and the Android client can reconnect through its existing retry loop. The client also keeps USB tracking TCP sends best-effort/non-blocking so tracking backpressure does not stall the XR frame.
+
+USB TCP sends full encoded NAL records and render-pose records, so UDP FEC and NACK recovery are disabled on this path.
+
+## USB Network Transport
+
+The USB network transport streams the WiFi UDP path over the USB cable. Selecting USB Net in Home
+switches the headset's USB function to CDC-NCM over ADB (`svc usb setFunctions ncm`), which macOS
+binds with its built-in NCM driver; no driver, kext, or headset app is installed. Home then gives the
+link fixed addresses: the Mac service is set to `192.168.42.1/24` with no router through
+`networksetup`, and the headset's `usb0` to `192.168.42.2/24` with no gateway through
+`cmd ethernet set-ip-configuration`. Neither side changes its default route, so the headset stays on
+WiFi for everything else. No root privileges are needed.
+
+The runtime only beacons to the limited broadcast address, which does not cross the link. While the
+headset reports the cable's Ethernet network, the Quest client sends a one-byte `DiscoveryRequest` to
+`192.168.42.1:9946` every second and connects only through the reply, so a WiFi beacon from the same
+Mac cannot pull the session onto WiFi. Because the headset's default network stays WiFi, the client
+binds its discovery, control, video, and tracking sockets to the Ethernet network with
+`android_setsocknetwork`; unbound sockets would route to the Mac over WiFi and fail. The client sends
+`ClientConnect.maxBitrateMbps = 0` on this path, like USB ADB, so the server bitrate applies. The
+runtime reports these sessions as `usb_ncm`. UDP FEC stays on, and live resolution changes stay
+limited to USB ADB because they need a reliable control channel.
+
+macOS asks once whether to allow the headset's new USB configuration; the Mac must be unlocked to
+answer. A link that appears while the Mac is locked is ignored until the cable is reconnected. The
+headset's NCM mode drops the interfaces Quest Link uses; Restore USB Mode in Home, or reconnecting
+the cable, returns the default USB mode. When the link comes up, the headset can briefly show a "No
+internet connection" notice for the Ethernet network, which has no internet by design; WiFi stays the
+default network and the notice clears on its own.
+
+## Current Status
+
+- Real `XR_EXT_hand_tracking` joints are fed from the Android client into the runtime.
+- Quest and PICO controller profiles are suggested on the Android client, and the runtime gates controller poses and controller actions with explicit active flags while keeping hand tracking available through separate hand-interaction bindings.
+- USB ADB reverse TCP streaming is available alongside WiFi UDP streaming, including the reserved reliable spatial channel on `9948`.
+- Runtime encoded-video dispatch is bounded and latest-frame-oriented, with queue/drop counters exposed in runtime status.
+- Refresh rate is selected by the server/Home, requested by the client, and negotiated back from the active headset rate.
+- Latency reporting, displayed-frame-age reporting, reprojection counters, and keyframe requests are wired into the control path.
+- Runtime ABR full mode can reconfigure the encoded stream resolution over USB TCP through `StreamConfigUpdate/Ack` without resizing the OpenXR application's swapchains.
+- The client applies frame-exact render poses for projection submission so headset compositor reprojection has the pose used to render the displayed frame, and can reuse short missing-frame gaps with bounded client reprojection.
+- Dynamic client foveation, shader upscaling, foveated-encoding decompression, app-requested passthrough during streaming, and encoded-resolution reconfiguration are present as evolving paths and should be validated regularly on hardware.
+- Headset speaker audio has protocol fields reserved, but the Quest client does not yet play a runtime audio stream.
+
+## Known Limits
+
+- Regular on-headset validation is still required.
+- The current path is optimized for low-latency iteration, not for wide-network robustness.
+- Rotation smoothness depends on render-pose match rate staying near 100%; misses should be investigated alongside displayed frame age, stale-frame reuse, dropped frames, NACKs, and keyframe requests.
+- Regular PICO validation is newer than Quest validation and should be kept in the log matrix when controller or hand tracking changes.

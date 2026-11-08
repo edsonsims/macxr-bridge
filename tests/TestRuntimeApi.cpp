@@ -1,0 +1,4595 @@
+// SPDX-License-Identifier: MPL-2.0
+
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
+
+#include <openxr/openxr.h>
+#include "OpenXRPlatform.h"
+#include <Protocol.h>
+
+#include <algorithm>
+#include <array>
+#include <set>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <future>
+#include <iterator>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <arpa/inet.h>
+#include <mach/mach.h>
+#include <mach/thread_policy.h>
+#include <poll.h>
+#include <pthread.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+using Catch::Matchers::WithinAbs;
+
+namespace
+{
+
+static constexpr const char* UNITY_METAL_ENABLE_EXTENSION_ALIAS = "XR_KHRX2_metal_enable";
+static constexpr const char* UNITY_METAL_GRAPHICS_REQUIREMENTS_FUNCTION_ALIAS =
+    "xrGetMetalGraphicsRequirementsKHRX2";
+static constexpr const char* XR_LOCATE_SPACES_KHR_FUNCTION_ALIAS = "xrLocateSpacesKHR";
+
+extern "C" void* OxrsysTestCreateMetalCommandQueue();
+extern "C" void OxrsysTestReleaseMetalObject(void* object);
+
+class TestMetalCommandQueue
+{
+public:
+    TestMetalCommandQueue()
+        : queue_(OxrsysTestCreateMetalCommandQueue())
+    {
+        REQUIRE(queue_ != nullptr);
+    }
+
+    ~TestMetalCommandQueue()
+    {
+        OxrsysTestReleaseMetalObject(queue_);
+    }
+
+    TestMetalCommandQueue(const TestMetalCommandQueue&) = delete;
+    TestMetalCommandQueue& operator=(const TestMetalCommandQueue&) = delete;
+
+    void* Get() const
+    {
+        return queue_;
+    }
+
+private:
+    void* queue_ = nullptr;
+};
+
+void CheckXr(XrResult result, const char* expression)
+{
+    INFO(expression);
+    REQUIRE(result == XR_SUCCESS);
+}
+
+#define XR_CHECK(expr) CheckXr((expr), #expr)
+
+void CheckXrBeginFrame(XrResult result, const char* expression)
+{
+    INFO(expression);
+    REQUIRE((result == XR_SUCCESS || result == XR_FRAME_DISCARDED));
+}
+
+#define XR_BEGIN_FRAME_CHECK(expr) CheckXrBeginFrame((expr), #expr)
+
+PFN_xrVoidFunction GetProc(XrInstance instance, const char* name)
+{
+    PFN_xrVoidFunction function = nullptr;
+    XR_CHECK(xrGetInstanceProcAddr(instance, name, &function));
+    REQUIRE(function != nullptr);
+    return function;
+}
+
+std::filesystem::path RuntimeConfigPath()
+{
+    const char* home = std::getenv("HOME");
+    REQUIRE(home != nullptr);
+    return std::filesystem::path(home) /
+           "Library/Application Support/OXRSys/oxrsys-runtime.toml";
+}
+
+// WriteRuntimeConfig replaces the user's real runtime config; a test that calls it holds one of these, which puts the
+// file back (or removes it, if there was none) when the test ends, failed REQUIREs included.
+class RuntimeConfigRestore
+{
+public:
+    RuntimeConfigRestore() : path_(RuntimeConfigPath())
+    {
+        std::ifstream file(path_, std::ios::binary);
+        if (file.is_open())
+        {
+            existed_ = true;
+            saved_.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+        }
+    }
+    ~RuntimeConfigRestore()
+    {
+        std::error_code ignored;
+        if (!existed_)
+        {
+            std::filesystem::remove(path_, ignored);
+            return;
+        }
+        std::ofstream file(path_, std::ios::binary | std::ios::trunc);
+        file << saved_;
+    }
+    RuntimeConfigRestore(const RuntimeConfigRestore&) = delete;
+    RuntimeConfigRestore& operator=(const RuntimeConfigRestore&) = delete;
+
+private:
+    std::filesystem::path path_;
+    std::string saved_;
+    bool existed_ = false;
+};
+
+void WriteRuntimeConfig(bool passthroughEnabled, bool appAlphaBlendPassthrough = false)
+{
+    const std::filesystem::path path = RuntimeConfigPath();
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream file(path);
+    REQUIRE(file.is_open());
+    file << "[streaming]\n"
+         << "passthrough_enabled = "
+         << (passthroughEnabled ? "true" : "false")
+         << "\n"
+         << "app_alpha_blend_passthrough = "
+         << (appAlphaBlendPassthrough ? "true" : "false")
+         << "\n"
+         << "[logging]\n"
+         << "file_logging = false\n";
+    file.close();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+}
+
+std::vector<XrEnvironmentBlendMode> EnumerateBlendModes(XrInstance instance,
+                                                        XrSystemId systemId)
+{
+    uint32_t count = 0;
+    XR_CHECK(xrEnumerateEnvironmentBlendModes(
+        instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &count, nullptr));
+    std::vector<XrEnvironmentBlendMode> modes(count);
+    XR_CHECK(xrEnumerateEnvironmentBlendModes(
+        instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+        count, &count, modes.data()));
+    modes.resize(count);
+    return modes;
+}
+
+int64_t SelectColorSwapchainFormat(XrSession session)
+{
+    uint32_t formatCount = 0;
+    XR_CHECK(xrEnumerateSwapchainFormats(session, 0, &formatCount, nullptr));
+    REQUIRE(formatCount > 0);
+
+    std::vector<int64_t> formats(formatCount);
+    XR_CHECK(xrEnumerateSwapchainFormats(session, formatCount, &formatCount, formats.data()));
+    return formats.front();
+}
+
+XrSwapchain CreateColorSwapchain(XrSession session, int64_t format, XrSwapchainCreateFlags createFlags = 0)
+{
+    XrSwapchainCreateInfo createInfo = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    createInfo.createFlags = createFlags;
+    createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+    createInfo.format = format;
+    createInfo.sampleCount = 1;
+    createInfo.width = 16;
+    createInfo.height = 16;
+    createInfo.faceCount = 1;
+    createInfo.arraySize = 1;
+    createInfo.mipCount = 1;
+
+    XrSwapchain swapchain = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateSwapchain(session, &createInfo, &swapchain));
+    return swapchain;
+}
+
+XrBool32 XRAPI_PTR CountingDebugUtilsCallback(
+    XrDebugUtilsMessageSeverityFlagsEXT /*messageSeverity*/,
+    XrDebugUtilsMessageTypeFlagsEXT /*messageTypes*/,
+    const XrDebugUtilsMessengerCallbackDataEXT* /*callbackData*/,
+    void* userData)
+{
+    auto* callbackCount = static_cast<uint32_t*>(userData);
+    if (callbackCount == nullptr)
+    {
+        return XR_FALSE;
+    }
+    ++(*callbackCount);
+    return XR_FALSE;
+}
+
+struct CapturedDebugUtilsMessage
+{
+    std::string messageId;
+    std::vector<std::string> objectNames;
+    std::vector<std::string> sessionLabels;
+};
+
+XrBool32 XRAPI_PTR CaptureDebugUtilsCallback(
+    XrDebugUtilsMessageSeverityFlagsEXT /*messageSeverity*/,
+    XrDebugUtilsMessageTypeFlagsEXT /*messageTypes*/,
+    const XrDebugUtilsMessengerCallbackDataEXT* callbackData,
+    void* userData)
+{
+    auto* capturedMessage = static_cast<CapturedDebugUtilsMessage*>(userData);
+    if (capturedMessage == nullptr || callbackData == nullptr)
+    {
+        return XR_FALSE;
+    }
+
+    capturedMessage->messageId = callbackData->messageId != nullptr ? callbackData->messageId : "";
+    capturedMessage->objectNames.clear();
+    capturedMessage->sessionLabels.clear();
+
+    for (uint32_t i = 0; i < callbackData->objectCount; ++i)
+    {
+        const char* objectName = callbackData->objects[i].objectName;
+        capturedMessage->objectNames.emplace_back(objectName != nullptr ? objectName : "");
+    }
+
+    for (uint32_t i = 0; i < callbackData->sessionLabelCount; ++i)
+    {
+        const char* labelName = callbackData->sessionLabels[i].labelName;
+        capturedMessage->sessionLabels.emplace_back(labelName != nullptr ? labelName : "");
+    }
+
+    return XR_FALSE;
+}
+
+struct RuntimeSessionContext
+{
+    explicit RuntimeSessionContext(std::initializer_list<const char*> extensions, bool beginSession = true,
+                                   XrVersion apiVersion = XR_CURRENT_API_VERSION)
+        : enabledExtensions(extensions)
+    {
+        XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+        std::strncpy(createInfo.applicationInfo.applicationName, "oxrsys_runtime_api_tests",
+                     XR_MAX_APPLICATION_NAME_SIZE);
+        createInfo.applicationInfo.apiVersion = apiVersion;
+        createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+        createInfo.enabledExtensionNames = enabledExtensions.data();
+        XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+        getMetalGraphicsRequirementsKHR =
+            reinterpret_cast<PFN_xrGetMetalGraphicsRequirementsKHR>(
+                GetProc(instance, "xrGetMetalGraphicsRequirementsKHR"));
+
+        if (HasExtension(XR_EXT_CONFORMANCE_AUTOMATION_EXTENSION_NAME))
+        {
+            setInputDeviceActiveEXT =
+                reinterpret_cast<PFN_xrSetInputDeviceActiveEXT>(
+                    GetProc(instance, "xrSetInputDeviceActiveEXT"));
+            setInputDeviceStateBoolEXT =
+                reinterpret_cast<PFN_xrSetInputDeviceStateBoolEXT>(
+                    GetProc(instance, "xrSetInputDeviceStateBoolEXT"));
+            setInputDeviceStateFloatEXT =
+                reinterpret_cast<PFN_xrSetInputDeviceStateFloatEXT>(
+                    GetProc(instance, "xrSetInputDeviceStateFloatEXT"));
+            setInputDeviceStateVector2fEXT =
+                reinterpret_cast<PFN_xrSetInputDeviceStateVector2fEXT>(
+                    GetProc(instance, "xrSetInputDeviceStateVector2fEXT"));
+            setInputDeviceLocationEXT =
+                reinterpret_cast<PFN_xrSetInputDeviceLocationEXT>(
+                    GetProc(instance, "xrSetInputDeviceLocationEXT"));
+        }
+
+        XrSystemGetInfo systemGetInfo = {XR_TYPE_SYSTEM_GET_INFO};
+        systemGetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+        XR_CHECK(xrGetSystem(instance, &systemGetInfo, &systemId));
+
+        XrGraphicsRequirementsMetalKHR graphicsRequirements = {XR_TYPE_GRAPHICS_REQUIREMENTS_METAL_KHR};
+        XR_CHECK(getMetalGraphicsRequirementsKHR(instance, systemId, &graphicsRequirements));
+
+        XrGraphicsBindingMetalKHR graphicsBinding = {XR_TYPE_GRAPHICS_BINDING_METAL_KHR};
+        graphicsBinding.commandQueue = metalCommandQueue.Get();
+
+        XrSessionCreateInfo sessionCreateInfo = {XR_TYPE_SESSION_CREATE_INFO};
+        sessionCreateInfo.next = &graphicsBinding;
+        sessionCreateInfo.systemId = systemId;
+        XR_CHECK(xrCreateSession(instance, &sessionCreateInfo, &session));
+
+        if (beginSession)
+        {
+            XrSessionBeginInfo beginInfo = {XR_TYPE_SESSION_BEGIN_INFO};
+            beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+            XR_CHECK(xrBeginSession(session, &beginInfo));
+
+            XrReferenceSpaceCreateInfo referenceSpaceCreateInfo = {XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+            referenceSpaceCreateInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+            referenceSpaceCreateInfo.poseInReferenceSpace.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+            XR_CHECK(xrCreateReferenceSpace(session, &referenceSpaceCreateInfo, &localSpace));
+        }
+    }
+
+    ~RuntimeSessionContext()
+    {
+        if (localSpace != XR_NULL_HANDLE)
+        {
+            xrDestroySpace(localSpace);
+        }
+        if (session != XR_NULL_HANDLE)
+        {
+            xrDestroySession(session);
+        }
+        if (instance != XR_NULL_HANDLE)
+        {
+            xrDestroyInstance(instance);
+        }
+    }
+
+    bool HasExtension(const char* extensionName) const
+    {
+        for (const char* enabledExtension : enabledExtensions)
+        {
+            if (std::strcmp(enabledExtension, extensionName) == 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    XrPath Path(const char* pathString) const
+    {
+        XrPath path = XR_NULL_PATH;
+        XR_CHECK(xrStringToPath(instance, pathString, &path));
+        return path;
+    }
+
+    std::vector<const char*> enabledExtensions;
+    TestMetalCommandQueue metalCommandQueue;
+    XrInstance instance = XR_NULL_HANDLE;
+    XrSystemId systemId = XR_NULL_SYSTEM_ID;
+    XrSession session = XR_NULL_HANDLE;
+    XrSpace localSpace = XR_NULL_HANDLE;
+
+    PFN_xrGetMetalGraphicsRequirementsKHR getMetalGraphicsRequirementsKHR = nullptr;
+    PFN_xrSetInputDeviceActiveEXT setInputDeviceActiveEXT = nullptr;
+    PFN_xrSetInputDeviceStateBoolEXT setInputDeviceStateBoolEXT = nullptr;
+    PFN_xrSetInputDeviceStateFloatEXT setInputDeviceStateFloatEXT = nullptr;
+    PFN_xrSetInputDeviceStateVector2fEXT setInputDeviceStateVector2fEXT = nullptr;
+    PFN_xrSetInputDeviceLocationEXT setInputDeviceLocationEXT = nullptr;
+};
+
+class LoopbackTrackingPeer
+{
+public:
+    explicit LoopbackTrackingPeer(bool tcp) : tcp_(tcp)
+    {
+        controlSocket_ = OpenSocket(oxr::protocol::CONTROL_PORT);
+        trackingSocket_ = OpenSocket(oxr::protocol::TRACKING_PORT);
+        if (tcp_)
+        {
+            oxr::protocol::TcpRecordHeader header = {};
+            REQUIRE(ReadAll(&header, sizeof(header)));
+            REQUIRE(header.magic == oxr::protocol::TCP_RECORD_MAGIC);
+            REQUIRE(header.version == oxr::protocol::TCP_RECORD_VERSION);
+            REQUIRE(header.type == oxr::protocol::TcpRecordType::ServerAnnounce);
+            REQUIRE(header.payloadSize == sizeof(oxr::protocol::ServerAnnounce));
+            oxr::protocol::ServerAnnounce announce = {};
+            REQUIRE(ReadAll(&announce, sizeof(announce)));
+        }
+
+        oxr::protocol::ClientConnect connect = {};
+        connect.type = oxr::protocol::MessageType::ClientConnect;
+        connect.versionMajor = 1;
+        connect.versionMinor = 2;
+        connect.supportedCodecs = oxr::protocol::CLIENT_CODEC_CAPABILITY_H265 |
+                                  oxr::protocol::CLIENT_CODEC_CAPABILITY_H264;
+        connect.refreshRateHz = 90;
+        std::strncpy(connect.deviceName, "Loopback tracking test", sizeof(connect.deviceName) - 1);
+        Send(controlSocket_, oxr::protocol::TcpRecordType::ClientConnect, &connect, sizeof(connect));
+    }
+
+    ~LoopbackTrackingPeer()
+    {
+        for (int socket : {controlSocket_, trackingSocket_})
+        {
+            if (socket >= 0)
+            {
+                shutdown(socket, SHUT_RDWR);
+                close(socket);
+            }
+        }
+    }
+
+    void SendTracking(oxr::protocol::TrackingPacket packet, size_t size)
+    {
+        REQUIRE(size <= sizeof(packet));
+        packet.timestampNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        Send(trackingSocket_, oxr::protocol::TcpRecordType::Tracking, &packet, size);
+    }
+
+    void Disconnect()
+    {
+        const auto type = oxr::protocol::MessageType::ServerDisconnect;
+        Send(controlSocket_, oxr::protocol::TcpRecordType::Disconnect,
+             tcp_ ? nullptr : &type, tcp_ ? 0 : sizeof(type));
+    }
+
+    bool WaitForDisconnect()
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            if (!tcp_)
+            {
+                const auto type = oxr::protocol::MessageType::DiscoveryRequest;
+                Send(controlSocket_, oxr::protocol::TcpRecordType::Control, &type, sizeof(type));
+            }
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+            pollfd descriptor = {controlSocket_, POLLIN, 0};
+            const int ready = poll(&descriptor, 1, static_cast<int>(std::clamp<int64_t>(remaining, 0, 100)));
+            if (ready < 0)
+            {
+                return false;
+            }
+            if (ready == 0)
+            {
+                continue;
+            }
+            std::array<uint8_t, sizeof(oxr::protocol::ServerAnnounce)> buffer = {};
+            const ssize_t received = recv(controlSocket_, buffer.data(), buffer.size(), 0);
+            if (tcp_)
+            {
+                return received == 0;
+            }
+            return received == static_cast<ssize_t>(buffer.size()) &&
+                   buffer[0] == static_cast<uint8_t>(oxr::protocol::MessageType::ServerAnnounce);
+        }
+        return false;
+    }
+
+    bool ReadHaptics(oxr::protocol::HapticsCommand& command, std::chrono::milliseconds timeout)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            pollfd descriptor = {controlSocket_, POLLIN, 0};
+            if (poll(&descriptor, 1, 10) <= 0)
+            {
+                continue;
+            }
+            std::array<uint8_t, 1024> payload = {};
+            size_t size = 0;
+            if (tcp_)
+            {
+                oxr::protocol::TcpRecordHeader header = {};
+                if (!ReadAll(&header, sizeof(header)) || header.magic != oxr::protocol::TCP_RECORD_MAGIC ||
+                    header.version != oxr::protocol::TCP_RECORD_VERSION || header.payloadSize > payload.size() ||
+                    !ReadAll(payload.data(), header.payloadSize))
+                {
+                    return false;
+                }
+                if (header.type != oxr::protocol::TcpRecordType::Control)
+                {
+                    continue;
+                }
+                size = header.payloadSize;
+            }
+            else
+            {
+                const ssize_t received = recv(controlSocket_, payload.data(), payload.size(), 0);
+                if (received <= 0)
+                {
+                    continue;
+                }
+                size = static_cast<size_t>(received);
+            }
+            if (size >= sizeof(command) &&
+                payload[0] == static_cast<uint8_t>(oxr::protocol::ControlType::Haptics))
+            {
+                std::memcpy(&command, payload.data(), sizeof(command));
+                return true;
+            }
+        }
+        return false;
+    }
+
+private:
+    int OpenSocket(uint16_t port)
+    {
+        const int socket = ::socket(AF_INET, tcp_ ? SOCK_STREAM : SOCK_DGRAM, 0);
+        REQUIRE(socket >= 0);
+        int enabled = 1;
+        REQUIRE(setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) == 0);
+        timeval timeout = {2, 0};
+        REQUIRE(setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0);
+        REQUIRE(setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0);
+        sockaddr_in address = {};
+        address.sin_len = sizeof(address);
+        address.sin_family = AF_INET;
+        address.sin_port = htons(port);
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        REQUIRE(connect(socket, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0);
+        return socket;
+    }
+
+    bool ReadAll(void* data, size_t size)
+    {
+        auto* bytes = static_cast<uint8_t*>(data);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (size > 0 && std::chrono::steady_clock::now() < deadline)
+        {
+            const ssize_t received = recv(controlSocket_, bytes, size, 0);
+            if (received <= 0)
+            {
+                return false;
+            }
+            bytes += received;
+            size -= static_cast<size_t>(received);
+        }
+        return size == 0;
+    }
+
+    void Send(int socket, oxr::protocol::TcpRecordType type, const void* data, size_t size)
+    {
+        if (tcp_)
+        {
+            oxr::protocol::TcpRecordHeader header = {};
+            header.type = type;
+            header.payloadSize = static_cast<uint32_t>(size);
+            REQUIRE(send(socket, &header, sizeof(header), 0) == sizeof(header));
+        }
+        if (size > 0)
+        {
+            REQUIRE(send(socket, data, size, 0) == static_cast<ssize_t>(size));
+        }
+    }
+
+    bool tcp_;
+    int controlSocket_ = -1;
+    int trackingSocket_ = -1;
+};
+
+XrTime PumpTrackingFrame(XrSession session)
+{
+    XrFrameState frameState = {XR_TYPE_FRAME_STATE};
+    XR_CHECK(xrWaitFrame(session, nullptr, &frameState));
+    XR_BEGIN_FRAME_CHECK(xrBeginFrame(session, nullptr));
+    XrFrameEndInfo endInfo = {XR_TYPE_FRAME_END_INFO};
+    endInfo.displayTime = frameState.predictedDisplayTime;
+    endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    XR_CHECK(xrEndFrame(session, &endInfo));
+    return frameState.predictedDisplayTime;
+}
+
+uint32_t CountStageChanges(const RuntimeSessionContext& context)
+{
+    uint32_t count = 0;
+    XrEventDataBuffer event = {XR_TYPE_EVENT_DATA_BUFFER};
+    XrResult result;
+    while ((result = xrPollEvent(context.instance, &event)) == XR_SUCCESS)
+    {
+        if (event.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING)
+        {
+            const auto* change = reinterpret_cast<const XrEventDataReferenceSpaceChangePending*>(&event);
+            CHECK(change->session == context.session);
+            CHECK(change->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_STAGE);
+            CHECK(change->changeTime > 0);
+            CHECK(change->poseValid == XR_FALSE);
+            ++count;
+        }
+        event = {XR_TYPE_EVENT_DATA_BUFFER};
+    }
+    REQUIRE(result == XR_EVENT_UNAVAILABLE);
+    return count;
+}
+
+} // namespace
+
+TEST_CASE("Loader-backed runtime exposes CTS-focused extensions", "[runtime][loader]")
+{
+    uint32_t extensionCount = 0;
+    XR_CHECK(xrEnumerateInstanceExtensionProperties(nullptr, 0, &extensionCount, nullptr));
+    REQUIRE(extensionCount >= 5);
+
+    std::vector<XrExtensionProperties> properties(extensionCount, {XR_TYPE_EXTENSION_PROPERTIES});
+    XR_CHECK(xrEnumerateInstanceExtensionProperties(nullptr, extensionCount, &extensionCount,
+                                                    properties.data()));
+
+    auto hasExtension = [&](const char* extensionName)
+    {
+        for (const auto& property : properties)
+        {
+            if (std::strcmp(property.extensionName, extensionName) == 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    CHECK(hasExtension(XR_KHR_METAL_ENABLE_EXTENSION_NAME));
+    CHECK(hasExtension(UNITY_METAL_ENABLE_EXTENSION_ALIAS));
+    CHECK(hasExtension(XR_EXT_HAND_TRACKING_EXTENSION_NAME));
+    CHECK(hasExtension(XR_EXT_CONFORMANCE_AUTOMATION_EXTENSION_NAME));
+    CHECK(hasExtension(XR_EXT_HAND_INTERACTION_EXTENSION_NAME));
+    CHECK(hasExtension(XR_EXT_DEBUG_UTILS_EXTENSION_NAME));
+#ifdef XR_META_touch_controller_plus
+    CHECK(hasExtension(XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME));
+#endif
+}
+
+TEST_CASE("Loader-backed runtime reports configured product version", "[runtime][loader]")
+{
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "oxrsys_runtime_version_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    XrInstanceProperties properties = {XR_TYPE_INSTANCE_PROPERTIES};
+    XR_CHECK(xrGetInstanceProperties(instance, &properties));
+    CHECK(properties.runtimeVersion ==
+          XR_MAKE_VERSION(OXRSYS_VERSION_MAJOR, OXRSYS_VERSION_MINOR, OXRSYS_VERSION_PATCH));
+    CHECK(std::string(properties.runtimeName) == "OXRSys Runtime");
+
+    xrDestroyInstance(instance);
+}
+
+TEST_CASE("Instance view and blend APIs reject missing output pointers", "[runtime][validation]")
+{
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "oxrsys_validation_tests",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    XrSystemGetInfo systemGetInfo = {XR_TYPE_SYSTEM_GET_INFO};
+    systemGetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+    XrSystemId systemId = XR_NULL_SYSTEM_ID;
+    XR_CHECK(xrGetSystem(instance, &systemGetInfo, &systemId));
+
+    CHECK(xrEnumerateViewConfigurations(instance, systemId, 0, nullptr, nullptr) ==
+          XR_ERROR_VALIDATION_FAILURE);
+
+    uint32_t count = 0;
+    CHECK(xrEnumerateViewConfigurations(instance, systemId, 1, &count, nullptr) ==
+          XR_ERROR_VALIDATION_FAILURE);
+
+    CHECK(xrGetViewConfigurationProperties(
+              instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, nullptr) ==
+          XR_ERROR_VALIDATION_FAILURE);
+
+    CHECK(xrEnumerateViewConfigurationViews(
+              instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, nullptr, nullptr) ==
+          XR_ERROR_VALIDATION_FAILURE);
+
+    CHECK(xrEnumerateViewConfigurationViews(
+              instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &count, nullptr) ==
+          XR_ERROR_VALIDATION_FAILURE);
+
+    CHECK(xrEnumerateEnvironmentBlendModes(
+              instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, nullptr, nullptr) ==
+          XR_ERROR_VALIDATION_FAILURE);
+
+    CHECK(xrEnumerateEnvironmentBlendModes(
+              instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 1, &count, nullptr) ==
+          XR_ERROR_VALIDATION_FAILURE);
+
+    xrDestroyInstance(instance);
+}
+
+TEST_CASE("Alpha blend modes are stable for an instance after config reload", "[runtime][passthrough]")
+{
+    RuntimeConfigRestore restoreConfig;
+    WriteRuntimeConfig(true, true);
+
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "stable_blend_modes_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    XrSystemGetInfo systemGetInfo = {XR_TYPE_SYSTEM_GET_INFO};
+    systemGetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+    XrSystemId systemId = XR_NULL_SYSTEM_ID;
+    XR_CHECK(xrGetSystem(instance, &systemGetInfo, &systemId));
+
+    std::vector<XrEnvironmentBlendMode> modes = EnumerateBlendModes(instance, systemId);
+    CHECK(std::find(modes.begin(), modes.end(),
+                    XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND) != modes.end());
+
+    WriteRuntimeConfig(false);
+    modes = EnumerateBlendModes(instance, systemId);
+    CHECK(std::find(modes.begin(), modes.end(),
+                    XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND) != modes.end());
+
+    xrDestroyInstance(instance);
+
+    XrInstance nextInstance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &nextInstance));
+    XR_CHECK(xrGetSystem(nextInstance, &systemGetInfo, &systemId));
+    modes = EnumerateBlendModes(nextInstance, systemId);
+    CHECK(std::find(modes.begin(), modes.end(),
+                    XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND) == modes.end());
+
+    xrDestroyInstance(nextInstance);
+}
+
+TEST_CASE("Passthrough underlay alone does not advertise alpha blend", "[runtime][passthrough]")
+{
+    RuntimeConfigRestore restoreConfig;
+    WriteRuntimeConfig(true, false);
+
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "passthrough_underlay_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    XrSystemGetInfo systemGetInfo = {XR_TYPE_SYSTEM_GET_INFO};
+    systemGetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+    XrSystemId systemId = XR_NULL_SYSTEM_ID;
+    XR_CHECK(xrGetSystem(instance, &systemGetInfo, &systemId));
+
+    std::vector<XrEnvironmentBlendMode> modes = EnumerateBlendModes(instance, systemId);
+    CHECK(std::find(modes.begin(), modes.end(),
+                    XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND) == modes.end());
+
+    xrDestroyInstance(instance);
+}
+
+TEST_CASE("Runtime accepts Unity metal extension alias", "[runtime][loader]")
+{
+    std::array<const char*, 2> enabledExtensions = {
+        UNITY_METAL_ENABLE_EXTENSION_ALIAS,
+        XR_EXT_HAND_INTERACTION_EXTENSION_NAME,
+    };
+
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "unity_alias_runtime_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+    createInfo.enabledExtensionNames = enabledExtensions.data();
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    PFN_xrGetMetalGraphicsRequirementsKHR getMetalGraphicsRequirementsKHR =
+        reinterpret_cast<PFN_xrGetMetalGraphicsRequirementsKHR>(
+            GetProc(instance, "xrGetMetalGraphicsRequirementsKHR"));
+
+    XrSystemGetInfo systemGetInfo = {XR_TYPE_SYSTEM_GET_INFO};
+    systemGetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+
+    XrSystemId systemId = XR_NULL_SYSTEM_ID;
+    XR_CHECK(xrGetSystem(instance, &systemGetInfo, &systemId));
+
+    XrGraphicsRequirementsMetalKHR graphicsRequirements = {XR_TYPE_GRAPHICS_REQUIREMENTS_METAL_KHR};
+    XR_CHECK(getMetalGraphicsRequirementsKHR(instance, systemId, &graphicsRequirements));
+
+    xrDestroyInstance(instance);
+}
+
+TEST_CASE("Runtime exposes Unity metal graphics requirements alias", "[runtime][loader]")
+{
+    std::array<const char*, 1> enabledExtensions = {
+        UNITY_METAL_ENABLE_EXTENSION_ALIAS,
+    };
+
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "unity_alias_function_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+    createInfo.enabledExtensionNames = enabledExtensions.data();
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    PFN_xrVoidFunction function = nullptr;
+    XR_CHECK(xrGetInstanceProcAddr(instance, UNITY_METAL_GRAPHICS_REQUIREMENTS_FUNCTION_ALIAS, &function));
+    REQUIRE(function != nullptr);
+
+    auto getMetalGraphicsRequirementsKHRX2 =
+        reinterpret_cast<PFN_xrGetMetalGraphicsRequirementsKHR>(function);
+
+    XrSystemGetInfo systemGetInfo = {XR_TYPE_SYSTEM_GET_INFO};
+    systemGetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+
+    XrSystemId systemId = XR_NULL_SYSTEM_ID;
+    XR_CHECK(xrGetSystem(instance, &systemGetInfo, &systemId));
+
+    XrGraphicsRequirementsMetalKHR graphicsRequirements = {XR_TYPE_GRAPHICS_REQUIREMENTS_METAL_KHR};
+    XR_CHECK(getMetalGraphicsRequirementsKHRX2(instance, systemId, &graphicsRequirements));
+
+    xrDestroyInstance(instance);
+}
+
+TEST_CASE("Runtime requires a non-null Metal command queue", "[runtime][loader]")
+{
+    std::array<const char*, 1> enabledExtensions = {
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+    };
+
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "metal_null_queue_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+    createInfo.enabledExtensionNames = enabledExtensions.data();
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    auto getMetalGraphicsRequirementsKHR =
+        reinterpret_cast<PFN_xrGetMetalGraphicsRequirementsKHR>(
+            GetProc(instance, "xrGetMetalGraphicsRequirementsKHR"));
+
+    XrSystemGetInfo systemGetInfo = {XR_TYPE_SYSTEM_GET_INFO};
+    systemGetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+
+    XrSystemId systemId = XR_NULL_SYSTEM_ID;
+    XR_CHECK(xrGetSystem(instance, &systemGetInfo, &systemId));
+
+    XrGraphicsRequirementsMetalKHR graphicsRequirements = {XR_TYPE_GRAPHICS_REQUIREMENTS_METAL_KHR};
+    XR_CHECK(getMetalGraphicsRequirementsKHR(instance, systemId, &graphicsRequirements));
+
+    XrGraphicsBindingMetalKHR graphicsBinding = {XR_TYPE_GRAPHICS_BINDING_METAL_KHR};
+    graphicsBinding.commandQueue = nullptr;
+
+    XrSessionCreateInfo sessionCreateInfo = {XR_TYPE_SESSION_CREATE_INFO};
+    sessionCreateInfo.next = &graphicsBinding;
+    sessionCreateInfo.systemId = systemId;
+
+    XrSession session = XR_NULL_HANDLE;
+    CHECK(xrCreateSession(instance, &sessionCreateInfo, &session) == XR_ERROR_VALIDATION_FAILURE);
+    CHECK(session == XR_NULL_HANDLE);
+
+    XR_CHECK(xrDestroyInstance(instance));
+}
+
+TEST_CASE("Runtime requires Metal graphics requirements before session creation", "[runtime][loader]")
+{
+    std::array<const char*, 1> enabledExtensions = {
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+    };
+
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "metal_requirements_before_session_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+    createInfo.enabledExtensionNames = enabledExtensions.data();
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    XrSystemGetInfo systemGetInfo = {XR_TYPE_SYSTEM_GET_INFO};
+    systemGetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+
+    XrSystemId systemId = XR_NULL_SYSTEM_ID;
+    XR_CHECK(xrGetSystem(instance, &systemGetInfo, &systemId));
+
+    TestMetalCommandQueue metalCommandQueue;
+    XrGraphicsBindingMetalKHR graphicsBinding = {XR_TYPE_GRAPHICS_BINDING_METAL_KHR};
+    graphicsBinding.commandQueue = metalCommandQueue.Get();
+
+    XrSessionCreateInfo sessionCreateInfo = {XR_TYPE_SESSION_CREATE_INFO};
+    sessionCreateInfo.next = &graphicsBinding;
+    sessionCreateInfo.systemId = systemId;
+
+    XrSession session = XR_NULL_HANDLE;
+    CHECK(xrCreateSession(instance, &sessionCreateInfo, &session) ==
+          XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING);
+    CHECK(session == XR_NULL_HANDLE);
+
+    XR_CHECK(xrDestroyInstance(instance));
+}
+
+TEST_CASE("Runtime validates the session system id before graphics checks", "[runtime][loader]")
+{
+    std::array<const char*, 1> enabledExtensions = {
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+    };
+
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "session_system_id_validation_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+    createInfo.enabledExtensionNames = enabledExtensions.data();
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    auto getMetalGraphicsRequirementsKHR =
+        reinterpret_cast<PFN_xrGetMetalGraphicsRequirementsKHR>(
+            GetProc(instance, "xrGetMetalGraphicsRequirementsKHR"));
+
+    XrSystemGetInfo systemGetInfo = {XR_TYPE_SYSTEM_GET_INFO};
+    systemGetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+
+    XrSystemId systemId = XR_NULL_SYSTEM_ID;
+    XR_CHECK(xrGetSystem(instance, &systemGetInfo, &systemId));
+
+    XrGraphicsRequirementsMetalKHR graphicsRequirements = {XR_TYPE_GRAPHICS_REQUIREMENTS_METAL_KHR};
+    XR_CHECK(getMetalGraphicsRequirementsKHR(instance, systemId, &graphicsRequirements));
+
+    TestMetalCommandQueue metalCommandQueue;
+    XrGraphicsBindingMetalKHR graphicsBinding = {XR_TYPE_GRAPHICS_BINDING_METAL_KHR};
+    graphicsBinding.commandQueue = metalCommandQueue.Get();
+
+    XrSessionCreateInfo sessionCreateInfo = {XR_TYPE_SESSION_CREATE_INFO};
+    sessionCreateInfo.next = &graphicsBinding;
+
+    XrSession session = XR_NULL_HANDLE;
+
+    sessionCreateInfo.systemId = XR_NULL_SYSTEM_ID;
+    CHECK(xrCreateSession(instance, &sessionCreateInfo, &session) == XR_ERROR_SYSTEM_INVALID);
+    CHECK(session == XR_NULL_HANDLE);
+
+    sessionCreateInfo.systemId = systemId + 1;
+    CHECK(xrCreateSession(instance, &sessionCreateInfo, &session) == XR_ERROR_SYSTEM_INVALID);
+    CHECK(session == XR_NULL_HANDLE);
+
+    XR_CHECK(xrDestroyInstance(instance));
+}
+
+TEST_CASE("Runtime validates extension gating and path formatting", "[runtime][loader]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    PFN_xrVoidFunction function = nullptr;
+    CHECK(xrGetInstanceProcAddr(context.instance, "xrSetInputDeviceActiveEXT", &function) ==
+          XR_ERROR_FUNCTION_UNSUPPORTED);
+    CHECK(function == nullptr);
+    CHECK(xrGetInstanceProcAddr(context.instance, "xrCreateDebugUtilsMessengerEXT", &function) ==
+          XR_ERROR_FUNCTION_UNSUPPORTED);
+    CHECK(function == nullptr);
+
+    XrPath invalidPath = XR_NULL_PATH;
+    CHECK(xrStringToPath(context.instance, "invalid_path", &invalidPath) ==
+          XR_ERROR_PATH_FORMAT_INVALID);
+    CHECK(xrStringToPath(context.instance, "/", &invalidPath) ==
+          XR_ERROR_PATH_FORMAT_INVALID);
+    CHECK(xrStringToPath(context.instance, "/../foo", &invalidPath) ==
+          XR_ERROR_PATH_FORMAT_INVALID);
+    CHECK(xrStringToPath(context.instance, "/.", &invalidPath) ==
+          XR_ERROR_PATH_FORMAT_INVALID);
+
+    XrSystemHandTrackingPropertiesEXT handTrackingProperties = {
+        XR_TYPE_SYSTEM_HAND_TRACKING_PROPERTIES_EXT};
+    XrSystemProperties systemProperties = {XR_TYPE_SYSTEM_PROPERTIES};
+    systemProperties.next = &handTrackingProperties;
+    XR_CHECK(xrGetSystemProperties(context.instance, context.systemId, &systemProperties));
+    CHECK(handTrackingProperties.supportsHandTracking == XR_FALSE);
+}
+
+TEST_CASE("Runtime gates xrLocateSpaces behind OpenXR 1.1", "[runtime][loader]")
+{
+    const char* enabledExtensions[] = {XR_KHR_METAL_ENABLE_EXTENSION_NAME};
+
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "oxrsys_runtime_api_version_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 57);
+    createInfo.enabledExtensionCount = 1;
+    createInfo.enabledExtensionNames = enabledExtensions;
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    PFN_xrVoidFunction function = nullptr;
+    CHECK(xrGetInstanceProcAddr(instance, "xrLocateSpaces", &function) ==
+          XR_ERROR_FUNCTION_UNSUPPORTED);
+    CHECK(function == nullptr);
+
+    CHECK(xrGetInstanceProcAddr(instance, XR_LOCATE_SPACES_KHR_FUNCTION_ALIAS, &function) ==
+          XR_ERROR_FUNCTION_UNSUPPORTED);
+    CHECK(function == nullptr);
+
+    XR_CHECK(xrDestroyInstance(instance));
+}
+
+TEST_CASE("Runtime validates xrCreateInstance api version flags names and api layers", "[runtime][loader]")
+{
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "create_instance_validation_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    std::strncpy(createInfo.applicationInfo.engineName, "runtime_tests", XR_MAX_ENGINE_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+    XR_CHECK(xrDestroyInstance(instance));
+
+    createInfo.applicationInfo.apiVersion = 0;
+    CHECK(xrCreateInstance(&createInfo, &instance) == XR_ERROR_API_VERSION_UNSUPPORTED);
+
+    createInfo.applicationInfo.apiVersion = 1;
+    CHECK(xrCreateInstance(&createInfo, &instance) == XR_ERROR_API_VERSION_UNSUPPORTED);
+
+    createInfo.applicationInfo.apiVersion = XR_MAKE_VERSION(XR_VERSION_MAJOR(XR_CURRENT_API_VERSION) + 1, 0, 0);
+    CHECK(xrCreateInstance(&createInfo, &instance) == XR_ERROR_API_VERSION_UNSUPPORTED);
+
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+    createInfo.type = XR_TYPE_SYSTEM_GET_INFO;
+    CHECK(xrCreateInstance(&createInfo, &instance) == XR_ERROR_VALIDATION_FAILURE);
+
+    createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "create_instance_validation_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    std::strncpy(createInfo.applicationInfo.engineName, "runtime_tests", XR_MAX_ENGINE_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+    createInfo.createFlags = 0x42;
+    CHECK(xrCreateInstance(&createInfo, &instance) == XR_ERROR_VALIDATION_FAILURE);
+
+    createInfo.createFlags = 0;
+    const char* fakeLayer = "nonexistent_api_layer";
+    createInfo.enabledApiLayerCount = 1;
+    createInfo.enabledApiLayerNames = &fakeLayer;
+    CHECK(xrCreateInstance(&createInfo, &instance) == XR_ERROR_API_LAYER_NOT_PRESENT);
+
+    createInfo.enabledApiLayerCount = 0;
+    createInfo.enabledApiLayerNames = nullptr;
+    createInfo.applicationInfo.applicationName[0] = '\0';
+    CHECK(xrCreateInstance(&createInfo, &instance) == XR_ERROR_NAME_INVALID);
+}
+
+TEST_CASE("Runtime exposes xrLocateSpaces KHR alias for OpenXR 1.1", "[runtime][loader]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME}, false);
+
+    PFN_xrVoidFunction function = nullptr;
+    XR_CHECK(xrGetInstanceProcAddr(context.instance, "xrLocateSpaces", &function));
+    REQUIRE(function != nullptr);
+
+    function = nullptr;
+    XR_CHECK(xrGetInstanceProcAddr(context.instance, XR_LOCATE_SPACES_KHR_FUNCTION_ALIAS, &function));
+    REQUIRE(function != nullptr);
+}
+
+TEST_CASE("Runtime enumerates and creates LOCAL_FLOOR reference spaces", "[runtime][spaces]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    uint32_t spaceCount = 0;
+    XR_CHECK(xrEnumerateReferenceSpaces(context.session, 0, &spaceCount, nullptr));
+    REQUIRE(spaceCount >= 4);
+
+    std::vector<XrReferenceSpaceType> spaces(spaceCount);
+    XR_CHECK(xrEnumerateReferenceSpaces(context.session, spaceCount, &spaceCount, spaces.data()));
+    CHECK(std::find(spaces.begin(), spaces.end(), XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR) != spaces.end());
+
+    XrReferenceSpaceCreateInfo createInfo = {XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+    createInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR;
+    createInfo.poseInReferenceSpace.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+
+    XrSpace localFloorSpace = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateReferenceSpace(context.session, &createInfo, &localFloorSpace));
+
+    XrTime sampleTime = 1;
+    XrSpaceLocation location = {XR_TYPE_SPACE_LOCATION};
+    XR_CHECK(xrLocateSpace(localFloorSpace, context.localSpace, sampleTime, &location));
+    CHECK((location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0);
+    CHECK((location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0);
+    CHECK_THAT(location.pose.position.x, WithinAbs(0.0f, 0.001f));
+    CHECK_THAT(location.pose.position.y, WithinAbs(0.0f, 0.001f));
+    CHECK_THAT(location.pose.position.z, WithinAbs(0.0f, 0.001f));
+
+    XR_CHECK(xrDestroySpace(localFloorSpace));
+}
+
+TEST_CASE("Runtime hides LOCAL_FLOOR for OpenXR 1.0 instances", "[runtime][spaces]")
+{
+    const char* enabledExtensions[] = {XR_KHR_METAL_ENABLE_EXTENSION_NAME};
+
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "oxrsys_runtime_local_floor_1_0_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 57);
+    createInfo.enabledExtensionCount = 1;
+    createInfo.enabledExtensionNames = enabledExtensions;
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    XrSystemGetInfo systemGetInfo = {XR_TYPE_SYSTEM_GET_INFO};
+    systemGetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+
+    XrSystemId systemId = XR_NULL_SYSTEM_ID;
+    XR_CHECK(xrGetSystem(instance, &systemGetInfo, &systemId));
+
+    auto getMetalGraphicsRequirementsKHR =
+        reinterpret_cast<PFN_xrGetMetalGraphicsRequirementsKHR>(
+            GetProc(instance, "xrGetMetalGraphicsRequirementsKHR"));
+    XrGraphicsRequirementsMetalKHR graphicsRequirements = {XR_TYPE_GRAPHICS_REQUIREMENTS_METAL_KHR};
+    XR_CHECK(getMetalGraphicsRequirementsKHR(instance, systemId, &graphicsRequirements));
+
+    TestMetalCommandQueue metalCommandQueue;
+    XrGraphicsBindingMetalKHR graphicsBinding = {XR_TYPE_GRAPHICS_BINDING_METAL_KHR};
+    graphicsBinding.commandQueue = metalCommandQueue.Get();
+
+    XrSessionCreateInfo sessionCreateInfo = {XR_TYPE_SESSION_CREATE_INFO};
+    sessionCreateInfo.next = &graphicsBinding;
+    sessionCreateInfo.systemId = systemId;
+
+    XrSession session = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateSession(instance, &sessionCreateInfo, &session));
+
+    uint32_t spaceCount = 0;
+    XR_CHECK(xrEnumerateReferenceSpaces(session, 0, &spaceCount, nullptr));
+    std::vector<XrReferenceSpaceType> spaces(spaceCount);
+    XR_CHECK(xrEnumerateReferenceSpaces(session, spaceCount, &spaceCount, spaces.data()));
+    CHECK(std::find(spaces.begin(), spaces.end(), XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR) == spaces.end());
+
+    XrReferenceSpaceCreateInfo referenceSpaceCreateInfo = {XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+    referenceSpaceCreateInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR;
+    referenceSpaceCreateInfo.poseInReferenceSpace.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+
+    XrSpace space = XR_NULL_HANDLE;
+    CHECK(xrCreateReferenceSpace(session, &referenceSpaceCreateInfo, &space) ==
+          XR_ERROR_REFERENCE_SPACE_UNSUPPORTED);
+    CHECK(space == XR_NULL_HANDLE);
+
+    XR_CHECK(xrDestroySession(session));
+    XR_CHECK(xrDestroyInstance(instance));
+}
+
+TEST_CASE("Runtime validates xrLocateSpaces count and velocity invariants", "[runtime][spaces]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    XrReferenceSpaceCreateInfo createInfo = {XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+    createInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    createInfo.poseInReferenceSpace.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+
+    std::array<XrSpace, 2> spaces = {};
+    XR_CHECK(xrCreateReferenceSpace(context.session, &createInfo, &spaces[0]));
+    createInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+    XR_CHECK(xrCreateReferenceSpace(context.session, &createInfo, &spaces[1]));
+
+    std::array<XrSpaceLocationData, 2> locationData = {};
+    XrSpaceLocations spaceLocations = {XR_TYPE_SPACE_LOCATIONS};
+    spaceLocations.locationCount = static_cast<uint32_t>(locationData.size());
+    spaceLocations.locations = locationData.data();
+
+    XrSpacesLocateInfo locateInfo = {XR_TYPE_SPACES_LOCATE_INFO};
+    locateInfo.baseSpace = context.localSpace;
+    locateInfo.time = 1;
+    locateInfo.spaceCount = 0;
+    locateInfo.spaces = spaces.data();
+
+    CHECK(xrLocateSpaces(context.session, &locateInfo, &spaceLocations) == XR_ERROR_VALIDATION_FAILURE);
+
+    locateInfo.spaceCount = static_cast<uint32_t>(spaces.size());
+    spaceLocations.locationCount = static_cast<uint32_t>(locationData.size()) - 1;
+    CHECK(xrLocateSpaces(context.session, &locateInfo, &spaceLocations) == XR_ERROR_VALIDATION_FAILURE);
+
+    spaceLocations.locationCount = static_cast<uint32_t>(locationData.size());
+    XrSpaceVelocities velocities = {XR_TYPE_SPACE_VELOCITIES};
+    std::array<XrSpaceVelocityData, 2> velocityData = {};
+    velocities.velocityCount = static_cast<uint32_t>(velocityData.size()) - 1;
+    velocities.velocities = velocityData.data();
+    spaceLocations.next = &velocities;
+
+    CHECK(xrLocateSpaces(context.session, &locateInfo, &spaceLocations) == XR_ERROR_VALIDATION_FAILURE);
+
+    velocities.velocityCount = static_cast<uint32_t>(velocityData.size());
+    XR_CHECK(xrLocateSpaces(context.session, &locateInfo, &spaceLocations));
+    for (size_t i = 0; i < spaces.size(); ++i)
+    {
+        XrSpaceVelocity velocity = {XR_TYPE_SPACE_VELOCITY};
+        XrSpaceLocation location = {XR_TYPE_SPACE_LOCATION, &velocity};
+        XR_CHECK(xrLocateSpace(spaces[i], context.localSpace, locateInfo.time, &location));
+        CHECK(velocity.velocityFlags ==
+              (XR_SPACE_VELOCITY_LINEAR_VALID_BIT | XR_SPACE_VELOCITY_ANGULAR_VALID_BIT));
+        CHECK(velocity.linearVelocity.x == 0.0f);
+        CHECK(velocity.linearVelocity.y == 0.0f);
+        CHECK(velocity.linearVelocity.z == 0.0f);
+        CHECK(velocity.angularVelocity.x == 0.0f);
+        CHECK(velocity.angularVelocity.y == 0.0f);
+        CHECK(velocity.angularVelocity.z == 0.0f);
+        CHECK(velocityData[i].velocityFlags == velocity.velocityFlags);
+        CHECK(locationData[i].locationFlags == location.locationFlags);
+    }
+
+    XR_CHECK(xrDestroySpace(spaces[1]));
+    XR_CHECK(xrDestroySpace(spaces[0]));
+}
+
+// Spaces of one reference space type move together, so their relative velocity is known and zero
+// even without a tracking connection, which leaves the head's own velocity unknown. The CTS locates
+// VIEW spaces in a VIEW space this way ("space velocities valid inputs").
+TEST_CASE("Spaces of one reference space type have a known zero relative velocity", "[runtime][spaces]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    XrReferenceSpaceCreateInfo createInfo = {XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+    createInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+    createInfo.poseInReferenceSpace.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+    std::array<XrSpace, 2> viewSpaces = {};
+    XR_CHECK(xrCreateReferenceSpace(context.session, &createInfo, &viewSpaces[0]));
+    createInfo.poseInReferenceSpace.position = {0.1f, -0.2f, 0.3f};
+    createInfo.poseInReferenceSpace.orientation = {0.0f, 0.70710678f, 0.0f, 0.70710678f};
+    XR_CHECK(xrCreateReferenceSpace(context.session, &createInfo, &viewSpaces[1]));
+
+    const auto checkAtRest = [](XrSpaceVelocityFlags flags, const XrVector3f& linear, const XrVector3f& angular) {
+        CHECK(flags == (XR_SPACE_VELOCITY_LINEAR_VALID_BIT | XR_SPACE_VELOCITY_ANGULAR_VALID_BIT));
+        CHECK(linear.x == 0.0f);
+        CHECK(linear.y == 0.0f);
+        CHECK(linear.z == 0.0f);
+        CHECK(angular.x == 0.0f);
+        CHECK(angular.y == 0.0f);
+        CHECK(angular.z == 0.0f);
+    };
+
+    std::array<XrSpaceLocationData, 2> locationData = {};
+    std::array<XrSpaceVelocityData, 2> velocityData = {};
+    XrSpaceVelocities velocities = {XR_TYPE_SPACE_VELOCITIES};
+    velocities.velocityCount = static_cast<uint32_t>(velocityData.size());
+    velocities.velocities = velocityData.data();
+    XrSpaceLocations locations = {XR_TYPE_SPACE_LOCATIONS, &velocities};
+    locations.locationCount = static_cast<uint32_t>(locationData.size());
+    locations.locations = locationData.data();
+    XrSpacesLocateInfo locateInfo = {XR_TYPE_SPACES_LOCATE_INFO};
+    locateInfo.baseSpace = viewSpaces[1];
+    locateInfo.time = 1;
+    locateInfo.spaceCount = static_cast<uint32_t>(viewSpaces.size());
+    locateInfo.spaces = viewSpaces.data();
+    XR_CHECK(xrLocateSpaces(context.session, &locateInfo, &locations));
+    for (const XrSpaceVelocityData& data : velocityData)
+    {
+        checkAtRest(data.velocityFlags, data.linearVelocity, data.angularVelocity);
+    }
+
+    XrSpaceVelocity velocity = {XR_TYPE_SPACE_VELOCITY};
+    XrSpaceLocation location = {XR_TYPE_SPACE_LOCATION, &velocity};
+    XR_CHECK(xrLocateSpace(viewSpaces[1], viewSpaces[0], locateInfo.time, &location));
+    checkAtRest(velocity.velocityFlags, velocity.linearVelocity, velocity.angularVelocity);
+
+    XR_CHECK(xrDestroySpace(viewSpaces[1]));
+    XR_CHECK(xrDestroySpace(viewSpaces[0]));
+}
+
+TEST_CASE("Loopback tracking reaches OpenXR velocities and STAGE bounds", "[runtime][tracking][loopback]")
+{
+    const bool tcp = GENERATE(false, true);
+    CAPTURE(tcp);
+
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+    XrReferenceSpaceCreateInfo createInfo = {XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+    createInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+    createInfo.poseInReferenceSpace.orientation.w = 1.0f;
+    XrSpace viewSpace = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateReferenceSpace(context.session, &createInfo, &viewSpace));
+
+    createInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+    XrSpace stageSpace = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateReferenceSpace(context.session, &createInfo, &stageSpace));
+
+    XrExtent2Df bounds = {123.0f, 456.0f};
+    CHECK(xrGetReferenceSpaceBoundsRect(context.session, XR_REFERENCE_SPACE_TYPE_STAGE, &bounds) ==
+          XR_SPACE_BOUNDS_UNAVAILABLE);
+    CHECK(bounds.width == 0.0f);
+    CHECK(bounds.height == 0.0f);
+    XrSpaceVelocity velocity = {XR_TYPE_SPACE_VELOCITY};
+    XrSpaceLocation location = {XR_TYPE_SPACE_LOCATION, &velocity};
+    XR_CHECK(xrLocateSpace(viewSpace, stageSpace, 1, &location));
+    CHECK(velocity.velocityFlags == 0);
+    CHECK(CountStageChanges(context) == 0);
+
+    LoopbackTrackingPeer peer(tcp);
+    oxr::protocol::TrackingPacket packet = {};
+    packet.headOrientation[3] = 1.0f;
+    packet.headPosition[1] = 1.6f;
+    packet.headLinearVelocity[0] = 1.0f;
+    packet.headLinearVelocity[1] = -2.0f;
+    packet.headLinearVelocity[2] = 3.0f;
+    packet.headAngularVelocity[0] = 0.5f;
+    packet.headAngularVelocity[1] = 0.25f;
+    packet.headAngularVelocity[2] = -0.75f;
+    packet.stageBoundsWidth = 2.0f;
+    packet.stageBoundsHeight = 3.0f;
+    packet.trackingFlags = oxr::protocol::TRACKING_FLAG_HEAD_LINEAR_VELOCITY_VALID |
+                           oxr::protocol::TRACKING_FLAG_HEAD_ANGULAR_VELOCITY_VALID |
+                           oxr::protocol::TRACKING_FLAG_STAGE_BOUNDS_VALID;
+    const XrSpaceVelocityFlags validVelocity =
+        XR_SPACE_VELOCITY_LINEAR_VALID_BIT | XR_SPACE_VELOCITY_ANGULAR_VALID_BIT;
+    XrTime sampleTime = 1;
+    XrResult boundsResult = XR_SPACE_BOUNDS_UNAVAILABLE;
+
+    auto readTracking = [&] {
+        sampleTime = PumpTrackingFrame(context.session);
+        XR_CHECK(xrLocateSpace(viewSpace, stageSpace, sampleTime, &location));
+        boundsResult = xrGetReferenceSpaceBoundsRect(context.session, XR_REFERENCE_SPACE_TYPE_STAGE, &bounds);
+    };
+    auto waitForPacket = [&](size_t size, auto matches) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        do
+        {
+            peer.SendTracking(packet, size);
+            readTracking();
+            if (matches())
+            {
+                return true;
+            }
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+
+    REQUIRE(waitForPacket(sizeof(packet), [&] {
+        return velocity.velocityFlags == validVelocity && velocity.linearVelocity.x == 1.0f &&
+               boundsResult == XR_SUCCESS && bounds.width == 2.0f && bounds.height == 3.0f;
+    }));
+    CHECK_THAT(velocity.linearVelocity.y, WithinAbs(-2.0f, 0.0001f));
+    CHECK_THAT(velocity.linearVelocity.z, WithinAbs(3.0f, 0.0001f));
+    CHECK_THAT(velocity.angularVelocity.x, WithinAbs(0.5f, 0.0001f));
+    CHECK_THAT(velocity.angularVelocity.y, WithinAbs(0.25f, 0.0001f));
+    CHECK_THAT(velocity.angularVelocity.z, WithinAbs(-0.75f, 0.0001f));
+    CHECK(CountStageChanges(context) == 1);
+
+    std::array<XrSpace, 2> spaces = {viewSpace, stageSpace};
+    std::array<XrSpaceLocationData, 2> locationData = {};
+    std::array<XrSpaceVelocityData, 2> velocityData = {};
+    XrSpaceVelocities velocities = {XR_TYPE_SPACE_VELOCITIES};
+    velocities.velocityCount = static_cast<uint32_t>(velocityData.size());
+    velocities.velocities = velocityData.data();
+    XrSpaceLocations locations = {XR_TYPE_SPACE_LOCATIONS, &velocities};
+    locations.locationCount = static_cast<uint32_t>(locationData.size());
+    locations.locations = locationData.data();
+    XrSpacesLocateInfo locateInfo = {XR_TYPE_SPACES_LOCATE_INFO};
+    locateInfo.baseSpace = stageSpace;
+    locateInfo.time = sampleTime;
+    locateInfo.spaceCount = static_cast<uint32_t>(spaces.size());
+    locateInfo.spaces = spaces.data();
+    XR_CHECK(xrLocateSpaces(context.session, &locateInfo, &locations));
+    for (size_t i = 0; i < spaces.size(); ++i)
+    {
+        XrSpaceVelocity singleVelocity = {XR_TYPE_SPACE_VELOCITY};
+        XrSpaceLocation singleLocation = {XR_TYPE_SPACE_LOCATION, &singleVelocity};
+        XR_CHECK(xrLocateSpace(spaces[i], stageSpace, sampleTime, &singleLocation));
+        CHECK(velocityData[i].velocityFlags == singleVelocity.velocityFlags);
+        CHECK(velocityData[i].linearVelocity.x == singleVelocity.linearVelocity.x);
+        CHECK(velocityData[i].linearVelocity.y == singleVelocity.linearVelocity.y);
+        CHECK(velocityData[i].linearVelocity.z == singleVelocity.linearVelocity.z);
+        CHECK(velocityData[i].angularVelocity.x == singleVelocity.angularVelocity.x);
+        CHECK(velocityData[i].angularVelocity.y == singleVelocity.angularVelocity.y);
+        CHECK(velocityData[i].angularVelocity.z == singleVelocity.angularVelocity.z);
+        CHECK(locationData[i].locationFlags == singleLocation.locationFlags);
+    }
+
+    std::fill(std::begin(packet.headLinearVelocity), std::end(packet.headLinearVelocity), 0.0f);
+    std::fill(std::begin(packet.headAngularVelocity), std::end(packet.headAngularVelocity), 0.0f);
+    REQUIRE(waitForPacket(sizeof(packet), [&] {
+        return velocity.velocityFlags == validVelocity && velocity.linearVelocity.x == 0.0f &&
+               velocity.linearVelocity.y == 0.0f && velocity.linearVelocity.z == 0.0f &&
+               velocity.angularVelocity.x == 0.0f && velocity.angularVelocity.y == 0.0f &&
+               velocity.angularVelocity.z == 0.0f;
+    }));
+    CHECK(CountStageChanges(context) == 0);
+
+    packet.stageBoundsWidth = 4.5f;
+    packet.stageBoundsHeight = 1.75f;
+    REQUIRE(waitForPacket(sizeof(packet), [&] {
+        return boundsResult == XR_SUCCESS && bounds.width == 4.5f && bounds.height == 1.75f;
+    }));
+    CHECK(CountStageChanges(context) == 1);
+
+    packet.trackingFlags &= ~oxr::protocol::TRACKING_FLAG_STAGE_BOUNDS_VALID;
+    REQUIRE(waitForPacket(sizeof(packet), [&] {
+        return boundsResult == XR_SPACE_BOUNDS_UNAVAILABLE && bounds.width == 0.0f && bounds.height == 0.0f;
+    }));
+    CHECK(CountStageChanges(context) == 1);
+
+    packet.trackingFlags |= oxr::protocol::TRACKING_FLAG_STAGE_BOUNDS_VALID;
+    for (size_t size : {oxr::protocol::TRACKING_PACKET_BASE_SIZE,
+                        offsetof(oxr::protocol::TrackingPacket, stageBoundsWidth)})
+    {
+        CAPTURE(tcp, size);
+        packet.headLinearVelocity[0] += 1.0f;
+        REQUIRE(waitForPacket(size, [&] {
+            return velocity.velocityFlags == validVelocity &&
+                   velocity.linearVelocity.x == packet.headLinearVelocity[0] &&
+                   boundsResult == XR_SPACE_BOUNDS_UNAVAILABLE;
+        }));
+        CHECK(bounds.width == 0.0f);
+        CHECK(bounds.height == 0.0f);
+        CHECK(CountStageChanges(context) == 0);
+    }
+
+    REQUIRE(waitForPacket(sizeof(packet), [&] { return boundsResult == XR_SUCCESS; }));
+    CHECK(CountStageChanges(context) == 1);
+    peer.Disconnect();
+    REQUIRE(peer.WaitForDisconnect());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do
+    {
+        boundsResult = xrGetReferenceSpaceBoundsRect(context.session, XR_REFERENCE_SPACE_TYPE_STAGE, &bounds);
+        XR_CHECK(xrLocateSpace(viewSpace, stageSpace, sampleTime, &location));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    } while ((boundsResult != XR_SPACE_BOUNDS_UNAVAILABLE || velocity.velocityFlags != 0) &&
+             std::chrono::steady_clock::now() < deadline);
+    CHECK(boundsResult == XR_SPACE_BOUNDS_UNAVAILABLE);
+    CHECK(bounds.width == 0.0f);
+    CHECK(bounds.height == 0.0f);
+    CHECK(velocity.velocityFlags == 0);
+    CHECK(CountStageChanges(context) == 1);
+
+    if (!tcp)
+    {
+        for (int i = 0; i < 10; ++i)
+        {
+            peer.SendTracking(packet, sizeof(packet));
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            XR_CHECK(xrLocateSpace(viewSpace, stageSpace, sampleTime, &location));
+            CHECK(velocity.velocityFlags == 0);
+            CHECK(xrGetReferenceSpaceBoundsRect(context.session, XR_REFERENCE_SPACE_TYPE_STAGE, &bounds) ==
+                  XR_SPACE_BOUNDS_UNAVAILABLE);
+        }
+        CHECK(CountStageChanges(context) == 0);
+    }
+
+    XR_CHECK(xrDestroySpace(stageSpace));
+    XR_CHECK(xrDestroySpace(viewSpace));
+}
+
+TEST_CASE("Runtime stringifies OpenXR result and structure enums", "[runtime][loader]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    char resultBuffer[XR_MAX_RESULT_STRING_SIZE] = {};
+    char structureBuffer[XR_MAX_STRUCTURE_NAME_SIZE] = {};
+
+    XR_CHECK(xrResultToString(context.instance, XR_ERROR_HANDLE_INVALID, resultBuffer));
+    CHECK(std::string(resultBuffer) == "XR_ERROR_HANDLE_INVALID");
+
+    XR_CHECK(xrResultToString(context.instance, static_cast<XrResult>(0x7ffffffe), resultBuffer));
+    CHECK(std::string(resultBuffer) == "XR_UNKNOWN_SUCCESS_2147483646");
+
+    XR_CHECK(xrStructureTypeToString(context.instance, XR_TYPE_FRAME_END_INFO, structureBuffer));
+    CHECK(std::string(structureBuffer) == "XR_TYPE_FRAME_END_INFO");
+
+    XR_CHECK(xrStructureTypeToString(context.instance, static_cast<XrStructureType>(0x7ffffffe), structureBuffer));
+    CHECK(std::string(structureBuffer) == "XR_UNKNOWN_STRUCTURE_TYPE_2147483646");
+}
+
+TEST_CASE("Debug utils messenger callbacks work from instance create and explicit creation", "[runtime][loader]")
+{
+    uint32_t callbackCount = 0;
+
+    XrDebugUtilsMessengerCreateInfoEXT chainedCreateInfo = {XR_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+    chainedCreateInfo.messageSeverities = XR_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
+    chainedCreateInfo.messageTypes = XR_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT;
+    chainedCreateInfo.userCallback = CountingDebugUtilsCallback;
+    chainedCreateInfo.userData = &callbackCount;
+
+    std::array<const char*, 2> enabledExtensions = {
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_DEBUG_UTILS_EXTENSION_NAME,
+    };
+
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    createInfo.next = &chainedCreateInfo;
+    std::strncpy(createInfo.applicationInfo.applicationName, "oxrsys_runtime_debug_utils_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+    createInfo.enabledExtensionNames = enabledExtensions.data();
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    auto createMessenger = reinterpret_cast<PFN_xrCreateDebugUtilsMessengerEXT>(
+        GetProc(instance, "xrCreateDebugUtilsMessengerEXT"));
+    auto destroyMessenger = reinterpret_cast<PFN_xrDestroyDebugUtilsMessengerEXT>(
+        GetProc(instance, "xrDestroyDebugUtilsMessengerEXT"));
+    auto submitMessage = reinterpret_cast<PFN_xrSubmitDebugUtilsMessageEXT>(
+        GetProc(instance, "xrSubmitDebugUtilsMessageEXT"));
+    auto setObjectName = reinterpret_cast<PFN_xrSetDebugUtilsObjectNameEXT>(
+        GetProc(instance, "xrSetDebugUtilsObjectNameEXT"));
+
+    XrDebugUtilsMessengerEXT messenger = XR_NULL_HANDLE;
+    XR_CHECK(createMessenger(instance, &chainedCreateInfo, &messenger));
+
+    XrDebugUtilsObjectNameInfoEXT objectNameInfo = {XR_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+    objectNameInfo.objectType = XR_OBJECT_TYPE_INSTANCE;
+    objectNameInfo.objectHandle = reinterpret_cast<uint64_t>(instance);
+    objectNameInfo.objectName = "runtime-test-instance";
+    XR_CHECK(setObjectName(instance, &objectNameInfo));
+
+    XrDebugUtilsMessengerCallbackDataEXT callbackData = {XR_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT};
+    callbackData.messageId = "runtime-test";
+    callbackData.functionName = "xrSubmitDebugUtilsMessageEXT";
+    callbackData.message = "Debug utils callback";
+    XR_CHECK(submitMessage(instance,
+                           XR_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT,
+                           XR_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
+                           &callbackData));
+    CHECK(callbackCount == 2);
+
+    XR_CHECK(destroyMessenger(messenger));
+    XR_CHECK(xrDestroyInstance(instance));
+}
+
+TEST_CASE("Debug utils resolves object names and session labels", "[runtime][loader]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_DEBUG_UTILS_EXTENSION_NAME,
+    });
+
+    auto createMessenger = reinterpret_cast<PFN_xrCreateDebugUtilsMessengerEXT>(
+        GetProc(context.instance, "xrCreateDebugUtilsMessengerEXT"));
+    auto destroyMessenger = reinterpret_cast<PFN_xrDestroyDebugUtilsMessengerEXT>(
+        GetProc(context.instance, "xrDestroyDebugUtilsMessengerEXT"));
+    auto submitMessage = reinterpret_cast<PFN_xrSubmitDebugUtilsMessageEXT>(
+        GetProc(context.instance, "xrSubmitDebugUtilsMessageEXT"));
+    auto setObjectName = reinterpret_cast<PFN_xrSetDebugUtilsObjectNameEXT>(
+        GetProc(context.instance, "xrSetDebugUtilsObjectNameEXT"));
+    auto beginLabelRegion = reinterpret_cast<PFN_xrSessionBeginDebugUtilsLabelRegionEXT>(
+        GetProc(context.instance, "xrSessionBeginDebugUtilsLabelRegionEXT"));
+    auto endLabelRegion = reinterpret_cast<PFN_xrSessionEndDebugUtilsLabelRegionEXT>(
+        GetProc(context.instance, "xrSessionEndDebugUtilsLabelRegionEXT"));
+    auto insertLabel = reinterpret_cast<PFN_xrSessionInsertDebugUtilsLabelEXT>(
+        GetProc(context.instance, "xrSessionInsertDebugUtilsLabelEXT"));
+
+    CapturedDebugUtilsMessage capturedMessage;
+
+    XrDebugUtilsMessengerCreateInfoEXT createInfo = {XR_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+    createInfo.messageSeverities = XR_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT;
+    createInfo.messageTypes = XR_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    createInfo.userCallback = CaptureDebugUtilsCallback;
+    createInfo.userData = &capturedMessage;
+
+    XrDebugUtilsMessengerEXT messenger = XR_NULL_HANDLE;
+    XR_CHECK(createMessenger(context.instance, &createInfo, &messenger));
+
+    XrDebugUtilsObjectNameInfoEXT instanceNameInfo = {XR_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+    instanceNameInfo.objectType = XR_OBJECT_TYPE_INSTANCE;
+    instanceNameInfo.objectHandle = reinterpret_cast<uint64_t>(context.instance);
+    instanceNameInfo.objectName = "My Instance Obj";
+    XR_CHECK(setObjectName(context.instance, &instanceNameInfo));
+
+    XrDebugUtilsLabelEXT label = {XR_TYPE_DEBUG_UTILS_LABEL_EXT};
+    label.labelName = "First individual label";
+    XR_CHECK(insertLabel(context.session, &label));
+
+    std::array<XrDebugUtilsObjectNameInfoEXT, 2> objects = {{
+        {XR_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT},
+        {XR_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT},
+    }};
+    objects[0].objectType = XR_OBJECT_TYPE_INSTANCE;
+    objects[0].objectHandle = reinterpret_cast<uint64_t>(context.instance);
+    objects[0].objectName = "Not my instance";
+    objects[1].objectType = XR_OBJECT_TYPE_SESSION;
+    objects[1].objectHandle = reinterpret_cast<uint64_t>(context.session);
+    objects[1].objectName = "My Session Obj";
+
+    XrDebugUtilsMessengerCallbackDataEXT callbackData = {XR_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT};
+    callbackData.messageId = "debug-utils-first";
+    callbackData.functionName = "xrSubmitDebugUtilsMessageEXT";
+    callbackData.message = "Debug utils session label test";
+    callbackData.objectCount = static_cast<uint32_t>(objects.size());
+    callbackData.objects = objects.data();
+
+    XR_CHECK(submitMessage(context.instance,
+                           XR_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT,
+                           XR_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+                           &callbackData));
+    REQUIRE(capturedMessage.objectNames.size() == 2);
+    CHECK(capturedMessage.objectNames[0] == "My Instance Obj");
+    CHECK(capturedMessage.objectNames[1] == "My Session Obj");
+    REQUIRE(capturedMessage.sessionLabels.size() == 1);
+    CHECK(capturedMessage.sessionLabels[0] == "First individual label");
+
+    label.labelName = "Region label";
+    XR_CHECK(beginLabelRegion(context.session, &label));
+
+    callbackData.messageId = "debug-utils-region";
+    XR_CHECK(submitMessage(context.instance,
+                           XR_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT,
+                           XR_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+                           &callbackData));
+    REQUIRE(capturedMessage.sessionLabels.size() == 1);
+    CHECK(capturedMessage.sessionLabels[0] == "Region label");
+
+    XR_CHECK(endLabelRegion(context.session));
+    callbackData.messageId = "debug-utils-none";
+    XR_CHECK(submitMessage(context.instance,
+                           XR_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT,
+                           XR_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+                           &callbackData));
+    CHECK(capturedMessage.sessionLabels.empty());
+
+    XR_CHECK(destroyMessenger(messenger));
+}
+
+TEST_CASE("BeginSession rejects unsupported view configuration types", "[runtime][loader]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME}, false);
+
+    XrSessionBeginInfo beginInfo = {XR_TYPE_SESSION_BEGIN_INFO};
+    beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_MONO;
+    CHECK(xrBeginSession(context.session, &beginInfo) == XR_ERROR_VIEW_CONFIGURATION_TYPE_UNSUPPORTED);
+}
+
+// OpenComposite (Arizona Sunshine) begins a session, then requests exit and only pumps events,
+// never running a frame. Exit must still reach STOPPING, or the app waits out its timeout.
+TEST_CASE("RequestExitSession reaches STOPPING without a frame loop", "[runtime][loader]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    auto drainStates = [&]() {
+        std::vector<XrSessionState> states;
+        XrEventDataBuffer event = {XR_TYPE_EVENT_DATA_BUFFER};
+        while (xrPollEvent(context.instance, &event) == XR_SUCCESS)
+        {
+            if (event.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
+            {
+                states.push_back(reinterpret_cast<XrEventDataSessionStateChanged*>(&event)->state);
+            }
+            event = {XR_TYPE_EVENT_DATA_BUFFER};
+        }
+        return states;
+    };
+
+    drainStates();
+    XR_CHECK(xrRequestExitSession(context.session));
+    std::vector<XrSessionState> states = drainStates();
+    REQUIRE_FALSE(states.empty());
+    CHECK(states.back() == XR_SESSION_STATE_STOPPING);
+
+    XR_CHECK(xrEndSession(context.session));
+    states = drainStates();
+    REQUIRE_FALSE(states.empty());
+    CHECK(states.back() == XR_SESSION_STATE_EXITING);
+}
+
+// The session runs until xrEndSession, STOPPING included. An exit request before the first frame
+// queues SYNCHRONIZED and STOPPING at once, so an app that handles one event per frame, as the CTS
+// does, submits a frame for SYNCHRONIZED after the session has reached STOPPING.
+TEST_CASE("Frame calls keep working in STOPPING until xrEndSession", "[runtime][frame]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+    XR_CHECK(xrRequestExitSession(context.session));
+
+    XrFrameState frameState = {XR_TYPE_FRAME_STATE};
+    CHECK(xrWaitFrame(context.session, nullptr, &frameState) == XR_SUCCESS);
+    CHECK(xrBeginFrame(context.session, nullptr) == XR_SUCCESS);
+    XrFrameEndInfo endInfo = {XR_TYPE_FRAME_END_INFO};
+    endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    endInfo.displayTime = frameState.predictedDisplayTime;
+    CHECK(xrEndFrame(context.session, &endInfo) == XR_SUCCESS);
+
+    // The frame does not move the session out of STOPPING, so it ends; after that it no longer runs.
+    XR_CHECK(xrEndSession(context.session));
+    CHECK(xrWaitFrame(context.session, nullptr, &frameState) == XR_ERROR_SESSION_NOT_RUNNING);
+    CHECK(xrBeginFrame(context.session, nullptr) == XR_ERROR_SESSION_NOT_RUNNING);
+    CHECK(xrEndFrame(context.session, &endInfo) == XR_ERROR_SESSION_NOT_RUNNING);
+}
+
+TEST_CASE("DestroySession tolerates active frame loop resources", "[runtime][loader]")
+{
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "oxrsys_runtime_destroy_session_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+
+    const char* enabledExtensions[] = {XR_KHR_METAL_ENABLE_EXTENSION_NAME};
+    createInfo.enabledExtensionCount = 1;
+    createInfo.enabledExtensionNames = enabledExtensions;
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    auto getMetalGraphicsRequirementsKHR =
+        reinterpret_cast<PFN_xrGetMetalGraphicsRequirementsKHR>(
+            GetProc(instance, "xrGetMetalGraphicsRequirementsKHR"));
+
+    XrSystemGetInfo systemGetInfo = {XR_TYPE_SYSTEM_GET_INFO};
+    systemGetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+
+    XrSystemId systemId = XR_NULL_SYSTEM_ID;
+    XR_CHECK(xrGetSystem(instance, &systemGetInfo, &systemId));
+
+    XrGraphicsRequirementsMetalKHR graphicsRequirements = {XR_TYPE_GRAPHICS_REQUIREMENTS_METAL_KHR};
+    XR_CHECK(getMetalGraphicsRequirementsKHR(instance, systemId, &graphicsRequirements));
+
+    TestMetalCommandQueue metalCommandQueue;
+    XrGraphicsBindingMetalKHR graphicsBinding = {XR_TYPE_GRAPHICS_BINDING_METAL_KHR};
+    graphicsBinding.commandQueue = metalCommandQueue.Get();
+
+    XrSessionCreateInfo sessionCreateInfo = {XR_TYPE_SESSION_CREATE_INFO};
+    sessionCreateInfo.next = &graphicsBinding;
+    sessionCreateInfo.systemId = systemId;
+
+    XrSession session = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateSession(instance, &sessionCreateInfo, &session));
+
+    XrSessionBeginInfo beginInfo = {XR_TYPE_SESSION_BEGIN_INFO};
+    beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+    XR_CHECK(xrBeginSession(session, &beginInfo));
+
+    int64_t format = SelectColorSwapchainFormat(session);
+    XrSwapchain swapchain = CreateColorSwapchain(session, format);
+    REQUIRE(swapchain != XR_NULL_HANDLE);
+
+    XrReferenceSpaceCreateInfo spaceCreateInfo = {XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+    spaceCreateInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    spaceCreateInfo.poseInReferenceSpace.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+
+    XrSpace space = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateReferenceSpace(session, &spaceCreateInfo, &space));
+    REQUIRE(space != XR_NULL_HANDLE);
+
+    XR_CHECK(xrDestroySession(session));
+    XR_CHECK(xrDestroyInstance(instance));
+}
+
+TEST_CASE("DestroyInstance tolerates active session resources", "[runtime][loader]")
+{
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "oxrsys_runtime_destroy_instance_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+
+    const char* enabledExtensions[] = {XR_KHR_METAL_ENABLE_EXTENSION_NAME};
+    createInfo.enabledExtensionCount = 1;
+    createInfo.enabledExtensionNames = enabledExtensions;
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    auto getMetalGraphicsRequirementsKHR =
+        reinterpret_cast<PFN_xrGetMetalGraphicsRequirementsKHR>(
+            GetProc(instance, "xrGetMetalGraphicsRequirementsKHR"));
+
+    XrSystemGetInfo systemGetInfo = {XR_TYPE_SYSTEM_GET_INFO};
+    systemGetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+
+    XrSystemId systemId = XR_NULL_SYSTEM_ID;
+    XR_CHECK(xrGetSystem(instance, &systemGetInfo, &systemId));
+
+    XrGraphicsRequirementsMetalKHR graphicsRequirements = {XR_TYPE_GRAPHICS_REQUIREMENTS_METAL_KHR};
+    XR_CHECK(getMetalGraphicsRequirementsKHR(instance, systemId, &graphicsRequirements));
+
+    TestMetalCommandQueue metalCommandQueue;
+    XrGraphicsBindingMetalKHR graphicsBinding = {XR_TYPE_GRAPHICS_BINDING_METAL_KHR};
+    graphicsBinding.commandQueue = metalCommandQueue.Get();
+
+    XrSessionCreateInfo sessionCreateInfo = {XR_TYPE_SESSION_CREATE_INFO};
+    sessionCreateInfo.next = &graphicsBinding;
+    sessionCreateInfo.systemId = systemId;
+
+    XrSession session = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateSession(instance, &sessionCreateInfo, &session));
+
+    XrSessionBeginInfo beginInfo = {XR_TYPE_SESSION_BEGIN_INFO};
+    beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+    XR_CHECK(xrBeginSession(session, &beginInfo));
+
+    int64_t format = SelectColorSwapchainFormat(session);
+    XrSwapchain swapchain = CreateColorSwapchain(session, format);
+    REQUIRE(swapchain != XR_NULL_HANDLE);
+
+    XR_CHECK(xrDestroyInstance(instance));
+}
+
+TEST_CASE("Conformance automation drives Khronos simple controller actions", "[runtime][actions]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_CONFORMANCE_AUTOMATION_EXTENSION_NAME,
+#ifdef XR_META_touch_controller_plus
+        XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME,
+#endif
+    });
+
+    XrPath leftHandPath = context.Path("/user/hand/left");
+    XrPath simpleControllerPath = context.Path("/interaction_profiles/khr/simple_controller");
+    XrPath selectClickPath = context.Path("/user/hand/left/input/select/click");
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "simple", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Simple", XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrAction selectAction = XR_NULL_HANDLE;
+    XrActionCreateInfo actionCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    actionCreateInfo.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
+    actionCreateInfo.countSubactionPaths = 1;
+    actionCreateInfo.subactionPaths = &leftHandPath;
+    std::strncpy(actionCreateInfo.actionName, "select", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(actionCreateInfo.localizedActionName, "Select", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &actionCreateInfo, &selectAction));
+
+    XrActionSuggestedBinding suggestedBinding = {selectAction, selectClickPath};
+    XrInteractionProfileSuggestedBinding suggestedBindings = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.interactionProfile = simpleControllerPath;
+    suggestedBindings.suggestedBindings = &suggestedBinding;
+    suggestedBindings.countSuggestedBindings = 1;
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+
+    XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attachInfo));
+
+    XR_CHECK(context.setInputDeviceActiveEXT(context.session, simpleControllerPath, leftHandPath, XR_TRUE));
+    XR_CHECK(context.setInputDeviceStateBoolEXT(context.session, leftHandPath,
+                                                context.Path("/input/select/click"), XR_TRUE));
+
+    XrActiveActionSet activeActionSet = {};
+    activeActionSet.actionSet = actionSet;
+    XrActionsSyncInfo syncInfo = {XR_TYPE_ACTIONS_SYNC_INFO};
+    syncInfo.countActiveActionSets = 1;
+    syncInfo.activeActionSets = &activeActionSet;
+    XR_CHECK(xrSyncActions(context.session, &syncInfo));
+
+    XrInteractionProfileState interactionProfileState = {XR_TYPE_INTERACTION_PROFILE_STATE};
+    XR_CHECK(xrGetCurrentInteractionProfile(context.session, leftHandPath, &interactionProfileState));
+    CHECK(interactionProfileState.interactionProfile == simpleControllerPath);
+
+    XrActionStateGetInfo getInfo = {XR_TYPE_ACTION_STATE_GET_INFO};
+    getInfo.action = selectAction;
+    getInfo.subactionPath = leftHandPath;
+    XrActionStateBoolean boolState = {XR_TYPE_ACTION_STATE_BOOLEAN};
+    XR_CHECK(xrGetActionStateBoolean(context.session, &getInfo, &boolState));
+    CHECK(boolState.isActive == XR_TRUE);
+    CHECK(boolState.currentState == XR_TRUE);
+
+    uint32_t sourceCount = 0;
+    XrBoundSourcesForActionEnumerateInfo enumerateInfo = {
+        XR_TYPE_BOUND_SOURCES_FOR_ACTION_ENUMERATE_INFO};
+    enumerateInfo.action = selectAction;
+    XR_CHECK(xrEnumerateBoundSourcesForAction(context.session, &enumerateInfo, 0, &sourceCount, nullptr));
+    REQUIRE(sourceCount == 1);
+
+    std::array<XrPath, 1> sources = {};
+    XR_CHECK(xrEnumerateBoundSourcesForAction(context.session, &enumerateInfo,
+                                              static_cast<uint32_t>(sources.size()), &sourceCount,
+                                              sources.data()));
+    CHECK(sources[0] == selectClickPath);
+
+    char localizedName[XR_MAX_PATH_LENGTH] = {};
+    uint32_t localizedNameCount = 0;
+    XrInputSourceLocalizedNameGetInfo localizedNameInfo = {
+        XR_TYPE_INPUT_SOURCE_LOCALIZED_NAME_GET_INFO};
+    localizedNameInfo.sourcePath = selectClickPath;
+    localizedNameInfo.whichComponents =
+        XR_INPUT_SOURCE_LOCALIZED_NAME_USER_PATH_BIT | XR_INPUT_SOURCE_LOCALIZED_NAME_COMPONENT_BIT;
+    XR_CHECK(xrGetInputSourceLocalizedName(context.session, &localizedNameInfo,
+                                           sizeof(localizedName), &localizedNameCount, localizedName));
+    CHECK(std::string(localizedName).find("Left Hand") != std::string::npos);
+    CHECK(std::string(localizedName).find("Select") != std::string::npos);
+
+    XR_CHECK(xrDestroyAction(selectAction));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}
+
+TEST_CASE("Action state queries validate attachment subaction paths and action types", "[runtime][actions]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_CONFORMANCE_AUTOMATION_EXTENSION_NAME,
+    });
+
+    XrPath leftHandPath = context.Path("/user/hand/left");
+    XrPath selectClickPath = context.Path("/user/hand/left/input/select/click");
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "validate", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Validate", XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrAction booleanAction = XR_NULL_HANDLE;
+    XrActionCreateInfo booleanCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    booleanCreateInfo.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
+    booleanCreateInfo.countSubactionPaths = 1;
+    booleanCreateInfo.subactionPaths = &leftHandPath;
+    std::strncpy(booleanCreateInfo.actionName, "boolean_action", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(booleanCreateInfo.localizedActionName, "Boolean Action", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &booleanCreateInfo, &booleanAction));
+
+    XrAction hapticAction = XR_NULL_HANDLE;
+    XrActionCreateInfo hapticCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    hapticCreateInfo.actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT;
+    hapticCreateInfo.countSubactionPaths = 1;
+    hapticCreateInfo.subactionPaths = &leftHandPath;
+    std::strncpy(hapticCreateInfo.actionName, "haptic_action", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(hapticCreateInfo.localizedActionName, "Haptic Action", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &hapticCreateInfo, &hapticAction));
+
+    XrActionStateGetInfo getInfo = {XR_TYPE_ACTION_STATE_GET_INFO};
+    getInfo.action = booleanAction;
+    getInfo.subactionPath = leftHandPath;
+
+    XrActionStateBoolean booleanState = {XR_TYPE_ACTION_STATE_BOOLEAN};
+    CHECK(xrGetActionStateBoolean(context.session, &getInfo, &booleanState) ==
+          XR_ERROR_ACTIONSET_NOT_ATTACHED);
+
+    XrInteractionProfileState interactionProfileState = {XR_TYPE_INTERACTION_PROFILE_STATE};
+    CHECK(xrGetCurrentInteractionProfile(context.session, leftHandPath, &interactionProfileState) ==
+          XR_ERROR_ACTIONSET_NOT_ATTACHED);
+
+    uint32_t sourceCount = 0;
+    XrBoundSourcesForActionEnumerateInfo enumerateInfo = {
+        XR_TYPE_BOUND_SOURCES_FOR_ACTION_ENUMERATE_INFO};
+    enumerateInfo.action = booleanAction;
+    CHECK(xrEnumerateBoundSourcesForAction(context.session, &enumerateInfo, 0, &sourceCount, nullptr) ==
+          XR_ERROR_ACTIONSET_NOT_ATTACHED);
+
+    XrHapticActionInfo hapticActionInfo = {XR_TYPE_HAPTIC_ACTION_INFO};
+    hapticActionInfo.action = hapticAction;
+    hapticActionInfo.subactionPath = leftHandPath;
+    XrHapticVibration vibration = {XR_TYPE_HAPTIC_VIBRATION};
+    vibration.amplitude = 1.0f;
+    vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+    vibration.duration = XR_MIN_HAPTIC_DURATION;
+    CHECK(xrApplyHapticFeedback(context.session, &hapticActionInfo,
+                                reinterpret_cast<XrHapticBaseHeader*>(&vibration)) ==
+          XR_ERROR_ACTIONSET_NOT_ATTACHED);
+    CHECK(xrStopHapticFeedback(context.session, &hapticActionInfo) ==
+          XR_ERROR_ACTIONSET_NOT_ATTACHED);
+
+    XrSessionActionSetsAttachInfo invalidAttachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    invalidAttachInfo.countActionSets = 0;
+    CHECK(xrAttachSessionActionSets(context.session, &invalidAttachInfo) ==
+          XR_ERROR_VALIDATION_FAILURE);
+
+    XrActionSuggestedBinding binding = {booleanAction, selectClickPath};
+    XrInteractionProfileSuggestedBinding suggestedBindings = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.interactionProfile = context.Path("/interaction_profiles/khr/simple_controller");
+    suggestedBindings.suggestedBindings = &binding;
+    suggestedBindings.countSuggestedBindings = 1;
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+
+    XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attachInfo));
+
+    XrAction lateAction = XR_NULL_HANDLE;
+    CHECK(xrCreateAction(actionSet, &booleanCreateInfo, &lateAction) ==
+          XR_ERROR_ACTIONSETS_ALREADY_ATTACHED);
+
+    getInfo.subactionPath = XR_NULL_PATH;
+    XR_CHECK(xrGetActionStateBoolean(context.session, &getInfo, &booleanState));
+
+    getInfo.subactionPath = context.Path("/user/gamepad");
+    CHECK(xrGetActionStateBoolean(context.session, &getInfo, &booleanState) ==
+          XR_ERROR_PATH_UNSUPPORTED);
+
+    getInfo.subactionPath = static_cast<XrPath>(0x12345678);
+    CHECK(xrGetActionStateBoolean(context.session, &getInfo, &booleanState) ==
+          XR_ERROR_PATH_INVALID);
+
+    getInfo.subactionPath = leftHandPath;
+    XrActionStateFloat floatState = {XR_TYPE_ACTION_STATE_FLOAT};
+    XrActionStateVector2f vectorState = {XR_TYPE_ACTION_STATE_VECTOR2F};
+    XrActionStatePose poseState = {XR_TYPE_ACTION_STATE_POSE};
+    CHECK(xrGetActionStateFloat(context.session, &getInfo, &floatState) ==
+          XR_ERROR_ACTION_TYPE_MISMATCH);
+    CHECK(xrGetActionStateVector2f(context.session, &getInfo, &vectorState) ==
+          XR_ERROR_ACTION_TYPE_MISMATCH);
+    CHECK(xrGetActionStatePose(context.session, &getInfo, &poseState) ==
+          XR_ERROR_ACTION_TYPE_MISMATCH);
+    CHECK((xrApplyHapticFeedback(context.session, &hapticActionInfo,
+                                 reinterpret_cast<XrHapticBaseHeader*>(&vibration)) ==
+           XR_SESSION_NOT_FOCUSED));
+    CHECK(xrStopHapticFeedback(context.session, &hapticActionInfo) == XR_SESSION_NOT_FOCUSED);
+
+    XR_CHECK(xrDestroyAction(booleanAction));
+    XR_CHECK(xrDestroyAction(hapticAction));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}
+
+TEST_CASE("Action creation validates names duplicates and subaction paths", "[runtime][actions]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+    }, false);
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "test_action_set", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Test Action Set",
+                 XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrActionSet duplicateActionSet = XR_NULL_HANDLE;
+    CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &duplicateActionSet) ==
+          XR_ERROR_NAME_DUPLICATED);
+
+    XrActionSet localizedDuplicateActionSet = XR_NULL_HANDLE;
+    std::strncpy(actionSetCreateInfo.actionSetName, "test_action_set_two", XR_MAX_ACTION_SET_NAME_SIZE);
+    CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &localizedDuplicateActionSet) ==
+          XR_ERROR_LOCALIZED_NAME_DUPLICATED);
+
+    std::strncpy(actionSetCreateInfo.actionSetName, "INVALID_NAME", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Invalid Name", XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &duplicateActionSet) ==
+          XR_ERROR_PATH_FORMAT_INVALID);
+
+    XrAction action = XR_NULL_HANDLE;
+    XrActionCreateInfo actionCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    actionCreateInfo.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
+    std::strncpy(actionCreateInfo.actionName, "test_action", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(actionCreateInfo.localizedActionName, "Test Action", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &actionCreateInfo, &action));
+
+    XrAction duplicateAction = XR_NULL_HANDLE;
+    CHECK(xrCreateAction(actionSet, &actionCreateInfo, &duplicateAction) == XR_ERROR_NAME_DUPLICATED);
+
+    XrAction localizedDuplicateAction = XR_NULL_HANDLE;
+    std::strncpy(actionCreateInfo.actionName, "test_action_two", XR_MAX_ACTION_NAME_SIZE);
+    CHECK(xrCreateAction(actionSet, &actionCreateInfo, &localizedDuplicateAction) ==
+          XR_ERROR_LOCALIZED_NAME_DUPLICATED);
+
+    std::strncpy(actionCreateInfo.actionName, "invalid name", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(actionCreateInfo.localizedActionName, "Invalid Action", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    CHECK(xrCreateAction(actionSet, &actionCreateInfo, &duplicateAction) ==
+          XR_ERROR_PATH_FORMAT_INVALID);
+
+    XrPath invalidSubactionPath = context.Path("/user/head");
+    actionCreateInfo.actionType = XR_ACTION_TYPE_FLOAT_INPUT;
+    std::strncpy(actionCreateInfo.actionName, "float_action", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(actionCreateInfo.localizedActionName, "Float Action", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    actionCreateInfo.countSubactionPaths = 1;
+    actionCreateInfo.subactionPaths = &invalidSubactionPath;
+    CHECK(xrCreateAction(actionSet, &actionCreateInfo, &duplicateAction) == XR_ERROR_PATH_UNSUPPORTED);
+
+    XrPath duplicateSubactionPaths[2] = {context.Path("/user/hand/left"), context.Path("/user/hand/left")};
+    actionCreateInfo.countSubactionPaths = 2;
+    actionCreateInfo.subactionPaths = duplicateSubactionPaths;
+    CHECK(xrCreateAction(actionSet, &actionCreateInfo, &duplicateAction) == XR_ERROR_PATH_UNSUPPORTED);
+
+    XR_CHECK(xrDestroyAction(action));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}
+
+TEST_CASE("Suggest interaction profile bindings validates known profiles and paths", "[runtime][actions]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+    });
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "bindings", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Bindings", XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrAction action = XR_NULL_HANDLE;
+    XrActionCreateInfo actionCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    actionCreateInfo.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
+    std::strncpy(actionCreateInfo.actionName, "select", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(actionCreateInfo.localizedActionName, "Select", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &actionCreateInfo, &action));
+
+    XrActionSuggestedBinding binding = {action, context.Path("/user/hand/left/input/select/click")};
+    XrInteractionProfileSuggestedBinding suggestedBindings = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.suggestedBindings = &binding;
+    suggestedBindings.countSuggestedBindings = 1;
+
+    suggestedBindings.interactionProfile = context.Path("/interaction_profiles/khr/simple_controller");
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+
+    suggestedBindings.countSuggestedBindings = 0;
+    CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings) ==
+          XR_ERROR_VALIDATION_FAILURE);
+
+    suggestedBindings.countSuggestedBindings = 1;
+    suggestedBindings.interactionProfile = context.Path("/interaction_profiles/khr/another_controller");
+    CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings) ==
+          XR_ERROR_PATH_UNSUPPORTED);
+
+    suggestedBindings.interactionProfile = context.Path("/interaction_profiles/khr/simple_controller");
+    binding.binding = context.Path("/user/hand/right");
+    CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings) ==
+          XR_ERROR_PATH_UNSUPPORTED);
+
+    binding.binding = context.Path("/user/hand/left/input/select/click");
+    XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attachInfo));
+    CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings) ==
+          XR_ERROR_ACTIONSETS_ALREADY_ATTACHED);
+
+    XR_CHECK(xrDestroyAction(action));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}
+
+TEST_CASE("Suggest interaction profile bindings rejects unavailable extension-gated components",
+          "[runtime][actions]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+    });
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "gated_bindings", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Gated Bindings",
+                 XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrAction poseAction = XR_NULL_HANDLE;
+    XrActionCreateInfo actionCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    actionCreateInfo.actionType = XR_ACTION_TYPE_POSE_INPUT;
+    std::strncpy(actionCreateInfo.actionName, "pose_action", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(actionCreateInfo.localizedActionName, "Pose Action", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &actionCreateInfo, &poseAction));
+
+    XrActionSuggestedBinding binding = {poseAction, context.Path("/user/hand/left/input/pinch_ext/pose")};
+    XrInteractionProfileSuggestedBinding suggestedBindings = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.interactionProfile = context.Path("/interaction_profiles/khr/simple_controller");
+    suggestedBindings.suggestedBindings = &binding;
+    suggestedBindings.countSuggestedBindings = 1;
+    CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings) ==
+          XR_ERROR_PATH_UNSUPPORTED);
+
+    binding.binding = context.Path("/user/hand/left/input/trackpad/dpad_up");
+    CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings) ==
+          XR_ERROR_PATH_UNSUPPORTED);
+
+    XR_CHECK(xrDestroyAction(poseAction));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}
+
+TEST_CASE("Suggest interaction profile bindings takes the Steam Frame profile only with its extension",
+          "[runtime][actions]")
+{
+    auto suggestFrameBindings = [](RuntimeSessionContext& context) -> XrResult
+    {
+
+        XrActionSet actionSet = XR_NULL_HANDLE;
+        XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+        std::strncpy(actionSetCreateInfo.actionSetName, "frame", XR_MAX_ACTION_SET_NAME_SIZE);
+        std::strncpy(actionSetCreateInfo.localizedActionSetName, "Frame", XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+        XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+        XrAction buttonAction = XR_NULL_HANDLE;
+        XrActionCreateInfo actionCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+        actionCreateInfo.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
+        std::strncpy(actionCreateInfo.actionName, "button", XR_MAX_ACTION_NAME_SIZE);
+        std::strncpy(actionCreateInfo.localizedActionName, "Button", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+        XR_CHECK(xrCreateAction(actionSet, &actionCreateInfo, &buttonAction));
+
+        // The Frame's d-pad is its own buttons (dpad_up/click), not a trackpad's emulated dpad_up.
+        std::array<XrActionSuggestedBinding, 3> bindings = {{
+            {buttonAction, context.Path("/user/hand/left/input/dpad_up/click")},
+            {buttonAction, context.Path("/user/hand/right/input/x/click")},
+            {buttonAction, context.Path("/user/hand/left/input/bumper/click")},
+        }};
+        XrInteractionProfileSuggestedBinding suggestedBindings = {
+            XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+        suggestedBindings.interactionProfile =
+            context.Path("/interaction_profiles/valve/frame_controller_valve");
+        suggestedBindings.suggestedBindings = bindings.data();
+        suggestedBindings.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+        const XrResult result = xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings);
+
+        XR_CHECK(xrDestroyAction(buttonAction));
+        XR_CHECK(xrDestroyActionSet(actionSet));
+        return result;
+    };
+
+    {
+        RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+        CHECK(suggestFrameBindings(context) == XR_ERROR_PATH_UNSUPPORTED);
+    }
+    {
+        RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME, "XR_VALVE_frame_controller_interaction"});
+        CHECK(suggestFrameBindings(context) == XR_SUCCESS);
+    }
+}
+
+TEST_CASE("Suggest interaction profile bindings accepts hand interaction components when enabled",
+          "[runtime][actions]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_HAND_INTERACTION_EXTENSION_NAME,
+    });
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "enabled_ext_bindings", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Enabled Ext Bindings",
+                 XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrAction poseAction = XR_NULL_HANDLE;
+    XrActionCreateInfo actionCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    actionCreateInfo.actionType = XR_ACTION_TYPE_POSE_INPUT;
+    std::strncpy(actionCreateInfo.actionName, "ext_pose_action", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(actionCreateInfo.localizedActionName, "Ext Pose Action", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &actionCreateInfo, &poseAction));
+
+    XrActionSuggestedBinding binding = {poseAction, context.Path("/user/hand/right/input/pinch_ext/pose")};
+    XrInteractionProfileSuggestedBinding suggestedBindings = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.interactionProfile = context.Path("/interaction_profiles/oculus/touch_controller");
+    suggestedBindings.suggestedBindings = &binding;
+    suggestedBindings.countSuggestedBindings = 1;
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+
+    binding.binding = context.Path("/user/hand/right/input/poke_ext/pose");
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+
+    XR_CHECK(xrDestroyAction(poseAction));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}
+
+TEST_CASE("Suggest interaction profile bindings enforces availability-gated component paths",
+          "[runtime][actions]")
+{
+    RuntimeSessionContext handContext({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_HAND_INTERACTION_EXTENSION_NAME,
+    },
+                                      false);
+
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "availability_set", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Availability Set",
+                 XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateActionSet(handContext.instance, &actionSetCreateInfo, &actionSet));
+
+    XrActionCreateInfo booleanActionCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    booleanActionCreateInfo.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
+    std::strncpy(booleanActionCreateInfo.actionName, "availability_bool", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(booleanActionCreateInfo.localizedActionName, "Availability Bool",
+                 XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+
+    XrAction booleanAction = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateAction(actionSet, &booleanActionCreateInfo, &booleanAction));
+
+    XrActionCreateInfo floatActionCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    floatActionCreateInfo.actionType = XR_ACTION_TYPE_FLOAT_INPUT;
+    std::strncpy(floatActionCreateInfo.actionName, "availability_float", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(floatActionCreateInfo.localizedActionName, "Availability Float",
+                 XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+
+    XrAction floatAction = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateAction(actionSet, &floatActionCreateInfo, &floatAction));
+
+    XrActionSuggestedBinding unsupportedBinding[] = {
+        {booleanAction, handContext.Path("/user/hand/right/input/trigger/proximity_fb")},
+    };
+    XrInteractionProfileSuggestedBinding unsupportedSuggestInfo = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    unsupportedSuggestInfo.interactionProfile =
+        handContext.Path("/interaction_profiles/oculus/touch_controller");
+    unsupportedSuggestInfo.suggestedBindings = unsupportedBinding;
+    unsupportedSuggestInfo.countSuggestedBindings = 1;
+    REQUIRE(xrSuggestInteractionProfileBindings(handContext.instance, &unsupportedSuggestInfo) ==
+            XR_ERROR_PATH_UNSUPPORTED);
+
+    XrActionSuggestedBinding readyBindings[] = {
+        {booleanAction, handContext.Path("/user/hand/left/input/pinch_ext/ready_ext")},
+        {booleanAction, handContext.Path("/user/hand/left/input/grasp_ext/ready_ext")},
+        {booleanAction, handContext.Path("/user/hand/left/input/aim_activate_ext/ready_ext")},
+        {booleanAction, handContext.Path("/user/hand/right/input/pinch_ext/ready_ext")},
+        {booleanAction, handContext.Path("/user/hand/right/input/grasp_ext/ready_ext")},
+        {booleanAction, handContext.Path("/user/hand/right/input/aim_activate_ext/ready_ext")},
+        {floatAction, handContext.Path("/user/hand/left/input/aim_activate_ext/value")},
+        {floatAction, handContext.Path("/user/hand/right/input/aim_activate_ext/value")},
+    };
+    XrInteractionProfileSuggestedBinding readySuggestInfo = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    readySuggestInfo.interactionProfile =
+        handContext.Path("/interaction_profiles/ext/hand_interaction_ext");
+    readySuggestInfo.suggestedBindings = readyBindings;
+    readySuggestInfo.countSuggestedBindings = std::size(readyBindings);
+    XR_CHECK(xrSuggestInteractionProfileBindings(handContext.instance, &readySuggestInfo));
+
+    XR_CHECK(xrDestroyAction(booleanAction));
+    XR_CHECK(xrDestroyAction(floatAction));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}
+
+TEST_CASE("Suggest interaction profile bindings accepts grip surface for hand interaction in 1.1",
+          "[runtime][actions]")
+{
+
+    XrInstanceCreateInfo createInfo11 = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo11.applicationInfo.applicationName, "runtime_tests_hand_11",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo11.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 1, 0);
+    const char* extensions11[] = {
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_HAND_INTERACTION_EXTENSION_NAME,
+    };
+    createInfo11.enabledExtensionCount = std::size(extensions11);
+    createInfo11.enabledExtensionNames = extensions11;
+
+    XrInstance instance11 = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo11, &instance11));
+
+    XrActionSetCreateInfo actionSetCreateInfo11 = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo11.actionSetName, "availability11_set",
+                 XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo11.localizedActionSetName, "Availability 11 Set",
+                 XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+
+    XrActionSet actionSet11 = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateActionSet(instance11, &actionSetCreateInfo11, &actionSet11));
+
+    XrActionCreateInfo poseActionCreateInfo11 = {XR_TYPE_ACTION_CREATE_INFO};
+    poseActionCreateInfo11.actionType = XR_ACTION_TYPE_POSE_INPUT;
+    std::strncpy(poseActionCreateInfo11.actionName, "availability11_pose", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(poseActionCreateInfo11.localizedActionName, "Availability 11 Pose",
+                 XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+
+    XrAction poseAction11 = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateAction(actionSet11, &poseActionCreateInfo11, &poseAction11));
+
+    XrPath leftGripSurface11 = XR_NULL_PATH;
+    XrPath rightGripSurface11 = XR_NULL_PATH;
+    XrPath handProfile11 = XR_NULL_PATH;
+    XR_CHECK(xrStringToPath(instance11, "/user/hand/left/input/grip_surface/pose", &leftGripSurface11));
+    XR_CHECK(xrStringToPath(instance11, "/user/hand/right/input/grip_surface/pose", &rightGripSurface11));
+    XR_CHECK(xrStringToPath(instance11, "/interaction_profiles/ext/hand_interaction_ext", &handProfile11));
+
+    XrActionSuggestedBinding gripSurfaceBindings[] = {
+        {poseAction11, leftGripSurface11},
+        {poseAction11, rightGripSurface11},
+    };
+    XrInteractionProfileSuggestedBinding gripSurfaceSuggestInfo = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    gripSurfaceSuggestInfo.interactionProfile = handProfile11;
+    gripSurfaceSuggestInfo.suggestedBindings = gripSurfaceBindings;
+    gripSurfaceSuggestInfo.countSuggestedBindings = std::size(gripSurfaceBindings);
+    XR_CHECK(xrSuggestInteractionProfileBindings(instance11, &gripSurfaceSuggestInfo));
+
+    XR_CHECK(xrDestroyAction(poseAction11));
+    XR_CHECK(xrDestroyActionSet(actionSet11));
+    XR_CHECK(xrDestroyInstance(instance11));
+}
+
+TEST_CASE("Quest Touch profile reports float and vector inputs", "[runtime][actions]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_CONFORMANCE_AUTOMATION_EXTENSION_NAME,
+    });
+
+    XrPath leftHandPath = context.Path("/user/hand/left");
+    XrPath touchControllerPath = context.Path("/interaction_profiles/oculus/touch_controller");
+    XrPath triggerValuePath = context.Path("/user/hand/left/input/trigger/value");
+    XrPath thumbstickPath = context.Path("/user/hand/left/input/thumbstick");
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "touch", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Touch", XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrAction triggerAction = XR_NULL_HANDLE;
+    XrActionCreateInfo triggerCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    triggerCreateInfo.actionType = XR_ACTION_TYPE_FLOAT_INPUT;
+    triggerCreateInfo.countSubactionPaths = 1;
+    triggerCreateInfo.subactionPaths = &leftHandPath;
+    std::strncpy(triggerCreateInfo.actionName, "trigger", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(triggerCreateInfo.localizedActionName, "Trigger", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &triggerCreateInfo, &triggerAction));
+
+    XrAction thumbstickAction = XR_NULL_HANDLE;
+    XrActionCreateInfo thumbstickCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    thumbstickCreateInfo.actionType = XR_ACTION_TYPE_VECTOR2F_INPUT;
+    thumbstickCreateInfo.countSubactionPaths = 1;
+    thumbstickCreateInfo.subactionPaths = &leftHandPath;
+    std::strncpy(thumbstickCreateInfo.actionName, "thumbstick", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(thumbstickCreateInfo.localizedActionName, "Thumbstick", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &thumbstickCreateInfo, &thumbstickAction));
+
+    std::array<XrActionSuggestedBinding, 2> bindings = {{
+        {triggerAction, triggerValuePath},
+        {thumbstickAction, thumbstickPath},
+    }};
+    XrInteractionProfileSuggestedBinding suggestedBindings = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.interactionProfile = touchControllerPath;
+    suggestedBindings.suggestedBindings = bindings.data();
+    suggestedBindings.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+
+    XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attachInfo));
+
+    XR_CHECK(context.setInputDeviceActiveEXT(context.session, touchControllerPath, leftHandPath, XR_TRUE));
+    XR_CHECK(context.setInputDeviceStateFloatEXT(context.session, leftHandPath,
+                                                 context.Path("/input/trigger/value"), 0.7f));
+    XR_CHECK(context.setInputDeviceStateVector2fEXT(context.session, leftHandPath,
+                                                    context.Path("/input/thumbstick"), {0.25f, -0.5f}));
+
+    XrActiveActionSet activeActionSet = {};
+    activeActionSet.actionSet = actionSet;
+    XrActionsSyncInfo syncInfo = {XR_TYPE_ACTIONS_SYNC_INFO};
+    syncInfo.countActiveActionSets = 1;
+    syncInfo.activeActionSets = &activeActionSet;
+    XR_CHECK(xrSyncActions(context.session, &syncInfo));
+
+    XrInteractionProfileState interactionProfileState = {XR_TYPE_INTERACTION_PROFILE_STATE};
+    XR_CHECK(xrGetCurrentInteractionProfile(context.session, leftHandPath, &interactionProfileState));
+    CHECK(interactionProfileState.interactionProfile == touchControllerPath);
+
+    XrActionStateGetInfo triggerGetInfo = {XR_TYPE_ACTION_STATE_GET_INFO};
+    triggerGetInfo.action = triggerAction;
+    triggerGetInfo.subactionPath = leftHandPath;
+    XrActionStateFloat floatState = {XR_TYPE_ACTION_STATE_FLOAT};
+    XR_CHECK(xrGetActionStateFloat(context.session, &triggerGetInfo, &floatState));
+    CHECK(floatState.isActive == XR_TRUE);
+    CHECK_THAT(floatState.currentState, WithinAbs(0.7f, 0.001f));
+
+    XrActionStateGetInfo thumbstickGetInfo = {XR_TYPE_ACTION_STATE_GET_INFO};
+    thumbstickGetInfo.action = thumbstickAction;
+    thumbstickGetInfo.subactionPath = leftHandPath;
+    XrActionStateVector2f vectorState = {XR_TYPE_ACTION_STATE_VECTOR2F};
+    XR_CHECK(xrGetActionStateVector2f(context.session, &thumbstickGetInfo, &vectorState));
+    CHECK(vectorState.isActive == XR_TRUE);
+    CHECK_THAT(vectorState.currentState.x, WithinAbs(0.25f, 0.001f));
+    CHECK_THAT(vectorState.currentState.y, WithinAbs(-0.5f, 0.001f));
+
+    XR_CHECK(xrDestroyAction(triggerAction));
+    XR_CHECK(xrDestroyAction(thumbstickAction));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}
+
+TEST_CASE("Quest Touch profile binds bare trigger and squeeze paths to their values", "[runtime][actions]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_CONFORMANCE_AUTOMATION_EXTENSION_NAME,
+    });
+
+    XrPath leftHandPath = context.Path("/user/hand/left");
+    XrPath touchControllerPath = context.Path("/interaction_profiles/oculus/touch_controller");
+    XrPath bareTriggerPath = context.Path("/user/hand/left/input/trigger");
+    XrPath bareSqueezePath = context.Path("/user/hand/left/input/squeeze");
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "bare", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Bare", XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    auto createAction = [&](XrActionType type, const char* name) {
+        XrAction action = XR_NULL_HANDLE;
+        XrActionCreateInfo createInfo = {XR_TYPE_ACTION_CREATE_INFO};
+        createInfo.actionType = type;
+        createInfo.countSubactionPaths = 1;
+        createInfo.subactionPaths = &leftHandPath;
+        std::strncpy(createInfo.actionName, name, XR_MAX_ACTION_NAME_SIZE);
+        std::strncpy(createInfo.localizedActionName, name, XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+        XR_CHECK(xrCreateAction(actionSet, &createInfo, &action));
+        return action;
+    };
+    XrAction triggerAction = createAction(XR_ACTION_TYPE_FLOAT_INPUT, "trigger");
+    XrAction squeezeAction = createAction(XR_ACTION_TYPE_FLOAT_INPUT, "squeeze");
+
+    std::array<XrActionSuggestedBinding, 2> bindings = {{
+        {triggerAction, bareTriggerPath},
+        {squeezeAction, bareSqueezePath},
+    }};
+    XrInteractionProfileSuggestedBinding suggestedBindings = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.interactionProfile = touchControllerPath;
+    suggestedBindings.suggestedBindings = bindings.data();
+    suggestedBindings.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+
+    XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attachInfo));
+
+    XR_CHECK(context.setInputDeviceActiveEXT(context.session, touchControllerPath, leftHandPath, XR_TRUE));
+    XR_CHECK(context.setInputDeviceStateFloatEXT(context.session, leftHandPath,
+                                                 context.Path("/input/trigger/value"), 0.7f));
+    XR_CHECK(context.setInputDeviceStateFloatEXT(context.session, leftHandPath,
+                                                 context.Path("/input/squeeze/value"), 0.8f));
+
+    XrActiveActionSet activeActionSet = {};
+    activeActionSet.actionSet = actionSet;
+    XrActionsSyncInfo syncInfo = {XR_TYPE_ACTIONS_SYNC_INFO};
+    syncInfo.countActiveActionSets = 1;
+    syncInfo.activeActionSets = &activeActionSet;
+    XR_CHECK(xrSyncActions(context.session, &syncInfo));
+
+    XrActionStateGetInfo getInfo = {XR_TYPE_ACTION_STATE_GET_INFO};
+    getInfo.subactionPath = leftHandPath;
+    XrActionStateFloat floatState = {XR_TYPE_ACTION_STATE_FLOAT};
+
+    getInfo.action = triggerAction;
+    XR_CHECK(xrGetActionStateFloat(context.session, &getInfo, &floatState));
+    CHECK(floatState.isActive == XR_TRUE);
+    CHECK_THAT(floatState.currentState, WithinAbs(0.7f, 0.001f));
+
+    getInfo.action = squeezeAction;
+    XR_CHECK(xrGetActionStateFloat(context.session, &getInfo, &floatState));
+    CHECK(floatState.isActive == XR_TRUE);
+    CHECK_THAT(floatState.currentState, WithinAbs(0.8f, 0.001f));
+
+    XR_CHECK(xrDestroyAction(triggerAction));
+    XR_CHECK(xrDestroyAction(squeezeAction));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}
+
+TEST_CASE("Quest Pico and simple profiles report float inputs through automation", "[runtime][actions]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_CONFORMANCE_AUTOMATION_EXTENSION_NAME,
+#ifdef XR_META_touch_controller_plus
+        XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME,
+#endif
+    });
+
+    XrPath leftHandPath = context.Path("/user/hand/left");
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "multi_controller",
+                 XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Multi Controller",
+                 XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrAction valueAction = XR_NULL_HANDLE;
+    XrActionCreateInfo actionCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    actionCreateInfo.actionType = XR_ACTION_TYPE_FLOAT_INPUT;
+    actionCreateInfo.countSubactionPaths = 1;
+    actionCreateInfo.subactionPaths = &leftHandPath;
+    std::strncpy(actionCreateInfo.actionName, "controller_value", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(actionCreateInfo.localizedActionName, "Controller Value",
+                 XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &actionCreateInfo, &valueAction));
+
+    struct ProfileCase
+    {
+        const char* profilePath;
+        const char* bindingPath;
+        const char* statePath;
+        float value;
+    };
+
+    const ProfileCase profiles[] = {
+        {"/interaction_profiles/oculus/touch_controller",
+         "/user/hand/left/input/trigger/value",
+         "/input/trigger/value",
+         0.20f},
+        {"/interaction_profiles/meta/touch_controller_quest_2",
+         "/user/hand/left/input/trigger/value",
+         "/input/trigger/value",
+         0.35f},
+        {"/interaction_profiles/meta/touch_plus_controller",
+         "/user/hand/left/input/trigger/value",
+         "/input/trigger/value",
+         0.50f},
+#ifdef XR_META_touch_controller_plus
+        {"/interaction_profiles/meta/touch_controller_plus",
+         "/user/hand/left/input/trigger/value",
+         "/input/trigger/value",
+         0.55f},
+#endif
+        {"/interaction_profiles/bytedance/pico_neo3_controller",
+         "/user/hand/left/input/trigger/value",
+         "/input/trigger/value",
+         0.65f},
+        {"/interaction_profiles/bytedance/pico4_controller",
+         "/user/hand/left/input/trigger/value",
+         "/input/trigger/value",
+         0.80f},
+        {"/interaction_profiles/khr/simple_controller",
+         "/user/hand/left/input/select/value",
+         "/input/select/value",
+         0.95f},
+    };
+
+    for (const ProfileCase& profile : profiles)
+    {
+        XrActionSuggestedBinding binding = {
+            valueAction, context.Path(profile.bindingPath)};
+        XrInteractionProfileSuggestedBinding suggestedBindings = {
+            XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+        suggestedBindings.interactionProfile = context.Path(profile.profilePath);
+        suggestedBindings.suggestedBindings = &binding;
+        suggestedBindings.countSuggestedBindings = 1;
+        XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+    }
+
+    XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attachInfo));
+
+    XrActiveActionSet activeActionSet = {};
+    activeActionSet.actionSet = actionSet;
+    XrActionsSyncInfo syncInfo = {XR_TYPE_ACTIONS_SYNC_INFO};
+    syncInfo.countActiveActionSets = 1;
+    syncInfo.activeActionSets = &activeActionSet;
+
+    for (const ProfileCase& profile : profiles)
+    {
+        INFO(profile.profilePath);
+        XrPath interactionProfile = context.Path(profile.profilePath);
+        XR_CHECK(context.setInputDeviceActiveEXT(context.session, interactionProfile,
+                                                 leftHandPath, XR_TRUE));
+        XR_CHECK(context.setInputDeviceStateFloatEXT(context.session, leftHandPath,
+                                                     context.Path(profile.statePath),
+                                                     profile.value));
+        XR_CHECK(xrSyncActions(context.session, &syncInfo));
+
+        XrInteractionProfileState interactionProfileState = {XR_TYPE_INTERACTION_PROFILE_STATE};
+        XR_CHECK(xrGetCurrentInteractionProfile(context.session, leftHandPath,
+                                                &interactionProfileState));
+        CHECK(interactionProfileState.interactionProfile == interactionProfile);
+
+        XrActionStateGetInfo getInfo = {XR_TYPE_ACTION_STATE_GET_INFO};
+        getInfo.action = valueAction;
+        getInfo.subactionPath = leftHandPath;
+        XrActionStateFloat state = {XR_TYPE_ACTION_STATE_FLOAT};
+        XR_CHECK(xrGetActionStateFloat(context.session, &getInfo, &state));
+        CHECK(state.isActive == XR_TRUE);
+        CHECK_THAT(state.currentState, WithinAbs(profile.value, 0.001f));
+    }
+
+    XR_CHECK(xrDestroyAction(valueAction));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}
+
+#ifdef XR_META_touch_controller_plus
+TEST_CASE("Touch Plus extension profile is selectable for OpenXR 1.0 apps",
+          "[runtime][actions]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_CONFORMANCE_AUTOMATION_EXTENSION_NAME,
+        XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME,
+    },
+                                  true, XR_MAKE_VERSION(1, 0, 57));
+
+    XrPath leftHandPath = context.Path("/user/hand/left");
+    XrPath touchPlusPath = context.Path("/interaction_profiles/meta/touch_controller_plus");
+    XrPath triggerValuePath = context.Path("/user/hand/left/input/trigger/value");
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "touch_plus_ext",
+                 XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Touch Plus Ext",
+                 XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrAction triggerAction = XR_NULL_HANDLE;
+    XrActionCreateInfo actionCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    actionCreateInfo.actionType = XR_ACTION_TYPE_FLOAT_INPUT;
+    actionCreateInfo.countSubactionPaths = 1;
+    actionCreateInfo.subactionPaths = &leftHandPath;
+    std::strncpy(actionCreateInfo.actionName, "touch_plus_ext_trigger",
+                 XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(actionCreateInfo.localizedActionName, "Touch Plus Ext Trigger",
+                 XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &actionCreateInfo, &triggerAction));
+
+    XrActionSuggestedBinding binding = {triggerAction, triggerValuePath};
+    XrInteractionProfileSuggestedBinding suggestedBindings = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.interactionProfile = touchPlusPath;
+    suggestedBindings.suggestedBindings = &binding;
+    suggestedBindings.countSuggestedBindings = 1;
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+
+    XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attachInfo));
+
+    XR_CHECK(context.setInputDeviceActiveEXT(context.session, touchPlusPath,
+                                             leftHandPath, XR_TRUE));
+    XR_CHECK(context.setInputDeviceStateFloatEXT(context.session, leftHandPath,
+                                                 context.Path("/input/trigger/value"), 0.66f));
+
+    XrActiveActionSet activeActionSet = {};
+    activeActionSet.actionSet = actionSet;
+    XrActionsSyncInfo syncInfo = {XR_TYPE_ACTIONS_SYNC_INFO};
+    syncInfo.countActiveActionSets = 1;
+    syncInfo.activeActionSets = &activeActionSet;
+    XR_CHECK(xrSyncActions(context.session, &syncInfo));
+
+    XrInteractionProfileState interactionProfileState = {XR_TYPE_INTERACTION_PROFILE_STATE};
+    XR_CHECK(xrGetCurrentInteractionProfile(context.session, leftHandPath,
+                                            &interactionProfileState));
+    CHECK(interactionProfileState.interactionProfile == touchPlusPath);
+
+    XrActionStateGetInfo getInfo = {XR_TYPE_ACTION_STATE_GET_INFO};
+    getInfo.action = triggerAction;
+    getInfo.subactionPath = leftHandPath;
+    XrActionStateFloat state = {XR_TYPE_ACTION_STATE_FLOAT};
+    XR_CHECK(xrGetActionStateFloat(context.session, &getInfo, &state));
+    CHECK(state.isActive == XR_TRUE);
+    CHECK_THAT(state.currentState, WithinAbs(0.66f, 0.001f));
+
+    XR_CHECK(xrDestroyAction(triggerAction));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}
+#endif
+
+TEST_CASE("Touch Plus promoted profile is selectable for OpenXR 1.1 apps",
+          "[runtime][actions]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_CONFORMANCE_AUTOMATION_EXTENSION_NAME,
+    },
+                                  true, XR_MAKE_VERSION(1, 1, 0));
+
+    XrPath leftHandPath = context.Path("/user/hand/left");
+    XrPath promotedTouchPlusPath = context.Path("/interaction_profiles/meta/touch_plus_controller");
+    XrPath triggerValuePath = context.Path("/user/hand/left/input/trigger/value");
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "touch_plus_11",
+                 XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Touch Plus 11",
+                 XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrAction triggerAction = XR_NULL_HANDLE;
+    XrActionCreateInfo actionCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    actionCreateInfo.actionType = XR_ACTION_TYPE_FLOAT_INPUT;
+    actionCreateInfo.countSubactionPaths = 1;
+    actionCreateInfo.subactionPaths = &leftHandPath;
+    std::strncpy(actionCreateInfo.actionName, "touch_plus_11_trigger",
+                 XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(actionCreateInfo.localizedActionName, "Touch Plus 11 Trigger",
+                 XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &actionCreateInfo, &triggerAction));
+
+    XrActionSuggestedBinding binding = {triggerAction, triggerValuePath};
+    XrInteractionProfileSuggestedBinding suggestedBindings = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.interactionProfile = promotedTouchPlusPath;
+    suggestedBindings.suggestedBindings = &binding;
+    suggestedBindings.countSuggestedBindings = 1;
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+
+    XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attachInfo));
+
+    XR_CHECK(context.setInputDeviceActiveEXT(context.session, promotedTouchPlusPath,
+                                             leftHandPath, XR_TRUE));
+    XR_CHECK(context.setInputDeviceStateFloatEXT(context.session, leftHandPath,
+                                                 context.Path("/input/trigger/value"), 0.58f));
+
+    XrActiveActionSet activeActionSet = {};
+    activeActionSet.actionSet = actionSet;
+    XrActionsSyncInfo syncInfo = {XR_TYPE_ACTIONS_SYNC_INFO};
+    syncInfo.countActiveActionSets = 1;
+    syncInfo.activeActionSets = &activeActionSet;
+    XR_CHECK(xrSyncActions(context.session, &syncInfo));
+
+    XrInteractionProfileState interactionProfileState = {XR_TYPE_INTERACTION_PROFILE_STATE};
+    XR_CHECK(xrGetCurrentInteractionProfile(context.session, leftHandPath,
+                                            &interactionProfileState));
+    CHECK(interactionProfileState.interactionProfile == promotedTouchPlusPath);
+
+    XrActionStateGetInfo getInfo = {XR_TYPE_ACTION_STATE_GET_INFO};
+    getInfo.action = triggerAction;
+    getInfo.subactionPath = leftHandPath;
+    XrActionStateFloat state = {XR_TYPE_ACTION_STATE_FLOAT};
+    XR_CHECK(xrGetActionStateFloat(context.session, &getInfo, &state));
+    CHECK(state.isActive == XR_TRUE);
+    CHECK_THAT(state.currentState, WithinAbs(0.58f, 0.001f));
+
+    XR_CHECK(xrDestroyAction(triggerAction));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}
+
+TEST_CASE("Inactive action spaces clear location flags", "[runtime][actions]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_CONFORMANCE_AUTOMATION_EXTENSION_NAME,
+    });
+
+    XrPath leftHandPath = context.Path("/user/hand/left");
+    XrPath touchControllerPath = context.Path("/interaction_profiles/oculus/touch_controller");
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "inactive_pose", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Inactive Pose",
+                 XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrAction poseAction = XR_NULL_HANDLE;
+    XrActionCreateInfo poseCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    poseCreateInfo.actionType = XR_ACTION_TYPE_POSE_INPUT;
+    poseCreateInfo.countSubactionPaths = 1;
+    poseCreateInfo.subactionPaths = &leftHandPath;
+    std::strncpy(poseCreateInfo.actionName, "inactive_grip", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(poseCreateInfo.localizedActionName, "Inactive Grip",
+                 XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &poseCreateInfo, &poseAction));
+
+    XrActionSuggestedBinding binding = {
+        poseAction, context.Path("/user/hand/left/input/grip/pose")};
+    XrInteractionProfileSuggestedBinding suggestedBindings = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.interactionProfile = touchControllerPath;
+    suggestedBindings.suggestedBindings = &binding;
+    suggestedBindings.countSuggestedBindings = 1;
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+
+    XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attachInfo));
+
+    XR_CHECK(context.setInputDeviceActiveEXT(context.session, touchControllerPath,
+                                             leftHandPath, XR_FALSE));
+
+    XrActiveActionSet activeActionSet = {};
+    activeActionSet.actionSet = actionSet;
+    XrActionsSyncInfo syncInfo = {XR_TYPE_ACTIONS_SYNC_INFO};
+    syncInfo.countActiveActionSets = 1;
+    syncInfo.activeActionSets = &activeActionSet;
+    XR_CHECK(xrSyncActions(context.session, &syncInfo));
+
+    XrActionStateGetInfo poseGetInfo = {XR_TYPE_ACTION_STATE_GET_INFO};
+    poseGetInfo.action = poseAction;
+    poseGetInfo.subactionPath = leftHandPath;
+    XrActionStatePose poseState = {XR_TYPE_ACTION_STATE_POSE};
+    XR_CHECK(xrGetActionStatePose(context.session, &poseGetInfo, &poseState));
+    CHECK(poseState.isActive == XR_FALSE);
+
+    XrSpace actionSpace = XR_NULL_HANDLE;
+    XrActionSpaceCreateInfo actionSpaceCreateInfo = {XR_TYPE_ACTION_SPACE_CREATE_INFO};
+    actionSpaceCreateInfo.action = poseAction;
+    actionSpaceCreateInfo.subactionPath = leftHandPath;
+    actionSpaceCreateInfo.poseInActionSpace.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+    XR_CHECK(xrCreateActionSpace(context.session, &actionSpaceCreateInfo, &actionSpace));
+
+    XrSpaceLocation location = {XR_TYPE_SPACE_LOCATION};
+    XR_CHECK(xrLocateSpace(actionSpace, context.localSpace, 1, &location));
+    CHECK(location.locationFlags == 0);
+
+    XrViewLocateInfo locateInfo = {XR_TYPE_VIEW_LOCATE_INFO};
+    locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+    locateInfo.displayTime = 1;
+    locateInfo.space = actionSpace;
+    XrViewState viewState = {XR_TYPE_VIEW_STATE};
+    uint32_t viewCount = 0;
+    XR_CHECK(xrLocateViews(context.session, &locateInfo, &viewState, 0, &viewCount, nullptr));
+    CHECK(viewState.viewStateFlags == 0);
+
+    std::array<XrView, 2> views = {{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}}};
+    XR_CHECK(xrLocateViews(context.session, &locateInfo, &viewState,
+                          static_cast<uint32_t>(views.size()), &viewCount, views.data()));
+    CHECK(viewState.viewStateFlags == 0);
+
+    XR_CHECK(xrDestroySpace(actionSpace));
+    XR_CHECK(xrDestroyAction(poseAction));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}
+
+TEST_CASE("Hand interaction pose and value inputs work through automation", "[runtime][hand]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_CONFORMANCE_AUTOMATION_EXTENSION_NAME,
+        XR_EXT_HAND_INTERACTION_EXTENSION_NAME,
+    });
+
+    XrPath leftHandPath = context.Path("/user/hand/left");
+    XrPath handInteractionPath = context.Path("/interaction_profiles/ext/hand_interaction_ext");
+    XrPath pinchPosePath = context.Path("/user/hand/left/input/pinch_ext/pose");
+    XrPath pinchValuePath = context.Path("/user/hand/left/input/pinch_ext/value");
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "hands", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Hands", XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrAction pinchPoseAction = XR_NULL_HANDLE;
+    XrActionCreateInfo poseCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    poseCreateInfo.actionType = XR_ACTION_TYPE_POSE_INPUT;
+    poseCreateInfo.countSubactionPaths = 1;
+    poseCreateInfo.subactionPaths = &leftHandPath;
+    std::strncpy(poseCreateInfo.actionName, "pinch_pose", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(poseCreateInfo.localizedActionName, "Pinch Pose", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &poseCreateInfo, &pinchPoseAction));
+
+    XrAction pinchValueAction = XR_NULL_HANDLE;
+    XrActionCreateInfo valueCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    valueCreateInfo.actionType = XR_ACTION_TYPE_FLOAT_INPUT;
+    valueCreateInfo.countSubactionPaths = 1;
+    valueCreateInfo.subactionPaths = &leftHandPath;
+    std::strncpy(valueCreateInfo.actionName, "pinch_value", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(valueCreateInfo.localizedActionName, "Pinch Value", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &valueCreateInfo, &pinchValueAction));
+
+    std::array<XrActionSuggestedBinding, 2> bindings = {{
+        {pinchPoseAction, pinchPosePath},
+        {pinchValueAction, pinchValuePath},
+    }};
+    XrInteractionProfileSuggestedBinding suggestedBindings = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.interactionProfile = handInteractionPath;
+    suggestedBindings.suggestedBindings = bindings.data();
+    suggestedBindings.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+
+    XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attachInfo));
+
+    XR_CHECK(context.setInputDeviceActiveEXT(context.session, handInteractionPath, leftHandPath, XR_TRUE));
+
+    XrPosef pinchPose = {};
+    pinchPose.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+    pinchPose.position = {0.15f, 1.25f, -0.35f};
+    XR_CHECK(context.setInputDeviceLocationEXT(context.session, leftHandPath,
+                                               context.Path("/input/pinch_ext/pose"),
+                                               context.localSpace, pinchPose));
+    XR_CHECK(context.setInputDeviceStateFloatEXT(context.session, leftHandPath,
+                                                 context.Path("/input/pinch_ext/value"), 0.8f));
+
+    XrActiveActionSet activeActionSet = {};
+    activeActionSet.actionSet = actionSet;
+    XrActionsSyncInfo syncInfo = {XR_TYPE_ACTIONS_SYNC_INFO};
+    syncInfo.countActiveActionSets = 1;
+    syncInfo.activeActionSets = &activeActionSet;
+    XR_CHECK(xrSyncActions(context.session, &syncInfo));
+
+    XrActionStateGetInfo poseGetInfo = {XR_TYPE_ACTION_STATE_GET_INFO};
+    poseGetInfo.action = pinchPoseAction;
+    poseGetInfo.subactionPath = leftHandPath;
+    XrActionStatePose poseState = {XR_TYPE_ACTION_STATE_POSE};
+    XR_CHECK(xrGetActionStatePose(context.session, &poseGetInfo, &poseState));
+    CHECK(poseState.isActive == XR_TRUE);
+
+    XrSpace pinchActionSpace = XR_NULL_HANDLE;
+    XrActionSpaceCreateInfo actionSpaceCreateInfo = {XR_TYPE_ACTION_SPACE_CREATE_INFO};
+    actionSpaceCreateInfo.action = pinchPoseAction;
+    actionSpaceCreateInfo.subactionPath = leftHandPath;
+    actionSpaceCreateInfo.poseInActionSpace.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+    XR_CHECK(xrCreateActionSpace(context.session, &actionSpaceCreateInfo, &pinchActionSpace));
+
+    XrTime sampleTime = 1;
+
+    XrSpaceLocation spaceLocation = {XR_TYPE_SPACE_LOCATION};
+    XR_CHECK(xrLocateSpace(pinchActionSpace, context.localSpace, sampleTime, &spaceLocation));
+    CHECK((spaceLocation.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0);
+    CHECK_THAT(spaceLocation.pose.position.x, WithinAbs(0.15f, 0.001f));
+    CHECK_THAT(spaceLocation.pose.position.y, WithinAbs(1.25f, 0.001f));
+    CHECK_THAT(spaceLocation.pose.position.z, WithinAbs(-0.35f, 0.001f));
+
+    std::array<XrSpace, 1> spaces = {pinchActionSpace};
+    std::array<XrSpaceLocationData, 1> locationData = {};
+    std::array<XrSpaceVelocityData, 1> velocityData = {};
+    XrSpaceVelocities velocities = {XR_TYPE_SPACE_VELOCITIES};
+    velocities.velocityCount = static_cast<uint32_t>(velocityData.size());
+    velocities.velocities = velocityData.data();
+
+    XrSpaceLocations spaceLocations = {XR_TYPE_SPACE_LOCATIONS};
+    spaceLocations.next = &velocities;
+    spaceLocations.locationCount = static_cast<uint32_t>(locationData.size());
+    spaceLocations.locations = locationData.data();
+
+    XrSpacesLocateInfo spacesLocateInfo = {XR_TYPE_SPACES_LOCATE_INFO};
+    spacesLocateInfo.baseSpace = context.localSpace;
+    spacesLocateInfo.time = sampleTime;
+    spacesLocateInfo.spaceCount = static_cast<uint32_t>(spaces.size());
+    spacesLocateInfo.spaces = spaces.data();
+
+    XR_CHECK(xrLocateSpaces(context.session, &spacesLocateInfo, &spaceLocations));
+    REQUIRE(spaceLocations.locationCount == 1);
+    REQUIRE(velocities.velocityCount == 1);
+    CHECK((locationData[0].locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0);
+    CHECK_THAT(locationData[0].pose.position.x, WithinAbs(0.15f, 0.001f));
+    CHECK_THAT(locationData[0].pose.position.y, WithinAbs(1.25f, 0.001f));
+    CHECK_THAT(locationData[0].pose.position.z, WithinAbs(-0.35f, 0.001f));
+    XrSpaceVelocity velocity = {XR_TYPE_SPACE_VELOCITY};
+    spaceLocation.next = &velocity;
+    XR_CHECK(xrLocateSpace(pinchActionSpace, context.localSpace, sampleTime, &spaceLocation));
+    CHECK(velocity.velocityFlags == 0);
+    CHECK(velocityData[0].velocityFlags == velocity.velocityFlags);
+    CHECK_THAT(velocityData[0].linearVelocity.x, WithinAbs(0.0f, 0.001f));
+    CHECK_THAT(velocityData[0].linearVelocity.y, WithinAbs(0.0f, 0.001f));
+    CHECK_THAT(velocityData[0].linearVelocity.z, WithinAbs(0.0f, 0.001f));
+    CHECK_THAT(velocityData[0].angularVelocity.x, WithinAbs(0.0f, 0.001f));
+    CHECK_THAT(velocityData[0].angularVelocity.y, WithinAbs(0.0f, 0.001f));
+    CHECK_THAT(velocityData[0].angularVelocity.z, WithinAbs(0.0f, 0.001f));
+
+    XrActionStateGetInfo valueGetInfo = {XR_TYPE_ACTION_STATE_GET_INFO};
+    valueGetInfo.action = pinchValueAction;
+    valueGetInfo.subactionPath = leftHandPath;
+    XrActionStateFloat valueState = {XR_TYPE_ACTION_STATE_FLOAT};
+    XR_CHECK(xrGetActionStateFloat(context.session, &valueGetInfo, &valueState));
+    CHECK(valueState.isActive == XR_TRUE);
+    CHECK_THAT(valueState.currentState, WithinAbs(0.8f, 0.001f));
+
+    XR_CHECK(xrDestroySpace(pinchActionSpace));
+    XR_CHECK(xrDestroyAction(pinchPoseAction));
+    XR_CHECK(xrDestroyAction(pinchValueAction));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}
+
+TEST_CASE("Hand tracking rejects zero locate time", "[runtime][hand]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_HAND_TRACKING_EXTENSION_NAME,
+    });
+
+    auto createHandTracker = reinterpret_cast<PFN_xrCreateHandTrackerEXT>(
+        GetProc(context.instance, "xrCreateHandTrackerEXT"));
+    auto destroyHandTracker = reinterpret_cast<PFN_xrDestroyHandTrackerEXT>(
+        GetProc(context.instance, "xrDestroyHandTrackerEXT"));
+    auto locateHandJoints = reinterpret_cast<PFN_xrLocateHandJointsEXT>(
+        GetProc(context.instance, "xrLocateHandJointsEXT"));
+
+    XrHandTrackerCreateInfoEXT createInfo = {XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT};
+    createInfo.hand = XR_HAND_LEFT_EXT;
+    createInfo.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+
+    XrHandTrackerEXT handTracker = XR_NULL_HANDLE;
+    XR_CHECK(createHandTracker(context.session, &createInfo, &handTracker));
+
+    std::array<XrHandJointLocationEXT, XR_HAND_JOINT_COUNT_EXT> jointLocations = {};
+    XrHandJointLocationsEXT locations = {XR_TYPE_HAND_JOINT_LOCATIONS_EXT};
+    locations.jointCount = static_cast<uint32_t>(jointLocations.size());
+    locations.jointLocations = jointLocations.data();
+
+    XrHandJointsLocateInfoEXT locateInfo = {XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT};
+    locateInfo.baseSpace = context.localSpace;
+    locateInfo.time = 0;
+
+    CHECK(locateHandJoints(handTracker, &locateInfo, &locations) == XR_ERROR_TIME_INVALID);
+
+    XR_CHECK(destroyHandTracker(handTracker));
+}
+
+TEST_CASE("Hand tracking validates joint buffer sizes and clears inactive flags", "[runtime][hand]")
+{
+    RuntimeSessionContext context({
+        XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+        XR_EXT_HAND_TRACKING_EXTENSION_NAME,
+    });
+
+    auto createHandTracker = reinterpret_cast<PFN_xrCreateHandTrackerEXT>(
+        GetProc(context.instance, "xrCreateHandTrackerEXT"));
+    auto destroyHandTracker = reinterpret_cast<PFN_xrDestroyHandTrackerEXT>(
+        GetProc(context.instance, "xrDestroyHandTrackerEXT"));
+    auto locateHandJoints = reinterpret_cast<PFN_xrLocateHandJointsEXT>(
+        GetProc(context.instance, "xrLocateHandJointsEXT"));
+
+    XrHandTrackerCreateInfoEXT createInfo = {XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT};
+    createInfo.hand = XR_HAND_LEFT_EXT;
+    createInfo.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+
+    XrHandTrackerEXT handTracker = XR_NULL_HANDLE;
+    XR_CHECK(createHandTracker(context.session, &createInfo, &handTracker));
+
+    std::array<XrHandJointLocationEXT, XR_HAND_JOINT_COUNT_EXT> jointLocations = {};
+    for (auto& jointLocation : jointLocations)
+    {
+        jointLocation.locationFlags = XR_SPACE_LOCATION_POSITION_VALID_BIT;
+    }
+
+    XrHandJointsLocateInfoEXT locateInfo = {XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT};
+    locateInfo.baseSpace = context.localSpace;
+    locateInfo.time = 1;
+
+    XrHandJointLocationsEXT locations = {XR_TYPE_HAND_JOINT_LOCATIONS_EXT};
+    locations.jointCount = static_cast<uint32_t>(jointLocations.size());
+    locations.jointLocations = jointLocations.data();
+
+    XR_CHECK(locateHandJoints(handTracker, &locateInfo, &locations));
+    CHECK(locations.isActive == XR_FALSE);
+    for (const auto& jointLocation : jointLocations)
+    {
+        CHECK(jointLocation.locationFlags == 0);
+    }
+
+    locations.jointCount = XR_HAND_JOINT_COUNT_EXT - 1;
+    CHECK(locateHandJoints(handTracker, &locateInfo, &locations) == XR_ERROR_VALIDATION_FAILURE);
+
+    std::array<XrHandJointVelocityEXT, XR_HAND_JOINT_COUNT_EXT> jointVelocities = {};
+    XrHandJointVelocitiesEXT velocities = {XR_TYPE_HAND_JOINT_VELOCITIES_EXT};
+    velocities.jointCount = XR_HAND_JOINT_COUNT_EXT - 1;
+    velocities.jointVelocities = jointVelocities.data();
+
+    locations.next = &velocities;
+    locations.jointCount = XR_HAND_JOINT_COUNT_EXT;
+    CHECK(locateHandJoints(handTracker, &locateInfo, &locations) == XR_ERROR_VALIDATION_FAILURE);
+
+    XR_CHECK(destroyHandTracker(handTracker));
+}
+
+TEST_CASE("Frame API supports pipelined waits and discarded begin semantics", "[runtime][frame]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    XrFrameState firstFrameState = {XR_TYPE_FRAME_STATE};
+    XrFrameState secondFrameState = {XR_TYPE_FRAME_STATE};
+    XrFrameEndInfo frameEndInfo = {XR_TYPE_FRAME_END_INFO};
+    frameEndInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+
+    XR_CHECK(xrWaitFrame(context.session, nullptr, &firstFrameState));
+    CHECK(xrBeginFrame(context.session, nullptr) == XR_SUCCESS);
+
+    XR_CHECK(xrWaitFrame(context.session, nullptr, &secondFrameState));
+    CHECK(xrBeginFrame(context.session, nullptr) == XR_FRAME_DISCARDED);
+
+    frameEndInfo.displayTime = secondFrameState.predictedDisplayTime;
+    CHECK(xrEndFrame(context.session, &frameEndInfo) == XR_SUCCESS);
+    CHECK(xrBeginFrame(context.session, nullptr) == XR_ERROR_CALL_ORDER_INVALID);
+
+    XrFrameState invalidTimeFrameState = {XR_TYPE_FRAME_STATE};
+    XR_CHECK(xrWaitFrame(context.session, nullptr, &invalidTimeFrameState));
+    CHECK(xrBeginFrame(context.session, nullptr) == XR_SUCCESS);
+
+    XrFrameEndInfo invalidTimeEndInfo = frameEndInfo;
+    invalidTimeEndInfo.displayTime = 0;
+    CHECK(xrEndFrame(context.session, &invalidTimeEndInfo) == XR_ERROR_TIME_INVALID);
+
+    XrFrameState recoveredFrameState = {XR_TYPE_FRAME_STATE};
+    XR_CHECK(xrWaitFrame(context.session, nullptr, &recoveredFrameState));
+    CHECK(xrBeginFrame(context.session, nullptr) == XR_FRAME_DISCARDED);
+
+    frameEndInfo.displayTime = recoveredFrameState.predictedDisplayTime;
+    CHECK(xrEndFrame(context.session, &frameEndInfo) == XR_SUCCESS);
+}
+
+// Reads whether a live thread has a Mach time-constraint policy. Returns false if the query failed.
+static bool QueryTimeConstraintPolicy(std::thread& thread, bool& timeConstraint)
+{
+    thread_time_constraint_policy_data_t policy{};
+    mach_msg_type_number_t count = THREAD_TIME_CONSTRAINT_POLICY_COUNT;
+    boolean_t isDefault = FALSE;
+    const kern_return_t result =
+        thread_policy_get(pthread_mach_thread_np(thread.native_handle()), THREAD_TIME_CONSTRAINT_POLICY,
+                          reinterpret_cast<thread_policy_t>(&policy), &count, &isDefault);
+    timeConstraint = !isDefault;
+    return result == KERN_SUCCESS;
+}
+
+TEST_CASE("pacing_thread realtime is given back when the session is destroyed", "[runtime][frame][pacing]")
+{
+    RuntimeConfigRestore restoreConfig;
+    {
+        const std::filesystem::path path = RuntimeConfigPath();
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream file(path);
+        REQUIRE(file.is_open());
+        file << "[streaming]\n"
+             << "pacing_thread = \"realtime\"\n"
+             << "[logging]\n"
+             << "file_logging = false\n";
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    // The app's render thread waits one frame, then stays alive past the session so its policy can
+    // be read afterwards. Catch2 assertions stay on the test thread.
+    std::promise<XrResult> waited;
+    std::promise<void> release;
+    std::thread renderThread([&] {
+        XrFrameState frameState = {XR_TYPE_FRAME_STATE};
+        waited.set_value(xrWaitFrame(context.session, nullptr, &frameState));
+        release.get_future().wait();
+    });
+    const XrResult waitResult = waited.get_future().get();
+
+    bool realtimeWhileRunning = false;
+    const bool queriedWhileRunning = QueryTimeConstraintPolicy(renderThread, realtimeWhileRunning);
+
+    xrDestroySpace(context.localSpace);
+    context.localSpace = XR_NULL_HANDLE;
+    const XrResult destroyResult = xrDestroySession(context.session);
+    context.session = XR_NULL_HANDLE;
+
+    bool realtimeAfterSession = true;
+    const bool queriedAfterSession = QueryTimeConstraintPolicy(renderThread, realtimeAfterSession);
+
+    release.set_value();
+    renderThread.join();
+
+    CHECK(waitResult == XR_SUCCESS);
+    REQUIRE(queriedWhileRunning);
+    CHECK(realtimeWhileRunning);
+    CHECK(destroyResult == XR_SUCCESS);
+    REQUIRE(queriedAfterSession);
+    CHECK_FALSE(realtimeAfterSession);
+}
+
+TEST_CASE("EndFrame rejects invalid projection and quad layers", "[runtime][frame][layers]")
+{
+    auto runProjectionCase =
+        [](auto configureProjection, XrResult expectedResult)
+        {
+            RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+            XrFrameState frameState = {XR_TYPE_FRAME_STATE};
+            XR_CHECK(xrWaitFrame(context.session, nullptr, &frameState));
+            XR_BEGIN_FRAME_CHECK(xrBeginFrame(context.session, nullptr));
+
+            const int64_t format = SelectColorSwapchainFormat(context.session);
+            XrSwapchain swapchain = CreateColorSwapchain(context.session, format);
+
+            XrCompositionLayerProjectionView projectionViews[2] = {};
+            for (auto& view : projectionViews)
+            {
+                view.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+                view.pose.orientation.w = 1.0f;
+                view.fov.angleLeft = -0.5f;
+                view.fov.angleRight = 0.5f;
+                view.fov.angleUp = 0.5f;
+                view.fov.angleDown = -0.5f;
+                view.subImage.swapchain = swapchain;
+                view.subImage.imageRect.extent = {16, 16};
+            }
+
+            configureProjection(context, swapchain, projectionViews);
+
+            XrCompositionLayerProjection projectionLayer = {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+            projectionLayer.space = context.localSpace;
+            projectionLayer.viewCount = 2;
+            projectionLayer.views = projectionViews;
+
+            const XrCompositionLayerBaseHeader* layers[] = {
+                reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projectionLayer),
+            };
+
+            XrFrameEndInfo frameEndInfo = {XR_TYPE_FRAME_END_INFO};
+            frameEndInfo.displayTime = frameState.predictedDisplayTime;
+            frameEndInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+            frameEndInfo.layerCount = 1;
+            frameEndInfo.layers = layers;
+
+            CHECK(xrEndFrame(context.session, &frameEndInfo) == expectedResult);
+            XR_CHECK(xrDestroySwapchain(swapchain));
+        };
+
+    auto runQuadCase =
+        [](auto configureQuad, XrResult expectedResult)
+        {
+            RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+            XrFrameState frameState = {XR_TYPE_FRAME_STATE};
+            XR_CHECK(xrWaitFrame(context.session, nullptr, &frameState));
+            XR_BEGIN_FRAME_CHECK(xrBeginFrame(context.session, nullptr));
+
+            const int64_t format = SelectColorSwapchainFormat(context.session);
+            XrSwapchain swapchain = CreateColorSwapchain(context.session, format);
+
+            uint32_t imageIndex = 0;
+            XR_CHECK(xrAcquireSwapchainImage(swapchain, nullptr, &imageIndex));
+            XrSwapchainImageWaitInfo waitInfo = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+            waitInfo.timeout = 0;
+            XR_CHECK(xrWaitSwapchainImage(swapchain, &waitInfo));
+            XR_CHECK(xrReleaseSwapchainImage(swapchain, nullptr));
+
+            XrCompositionLayerQuad quadLayer = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+            quadLayer.space = context.localSpace;
+            quadLayer.pose.orientation.w = 1.0f;
+            quadLayer.size = {1.0f, 1.0f};
+            quadLayer.subImage.swapchain = swapchain;
+            quadLayer.subImage.imageRect.extent = {16, 16};
+
+            configureQuad(context, swapchain, quadLayer);
+
+            const XrCompositionLayerBaseHeader* layers[] = {
+                reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quadLayer),
+            };
+
+            XrFrameEndInfo frameEndInfo = {XR_TYPE_FRAME_END_INFO};
+            frameEndInfo.displayTime = frameState.predictedDisplayTime;
+            frameEndInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+            frameEndInfo.layerCount = 1;
+            frameEndInfo.layers = layers;
+
+            CHECK(xrEndFrame(context.session, &frameEndInfo) == expectedResult);
+            XR_CHECK(xrDestroySwapchain(swapchain));
+        };
+
+    runProjectionCase(
+        [](const RuntimeSessionContext&, XrSwapchain, XrCompositionLayerProjectionView (&)[2]) {},
+        XR_ERROR_LAYER_INVALID);
+
+    runProjectionCase(
+        [](const RuntimeSessionContext&, XrSwapchain swapchain, XrCompositionLayerProjectionView (&views)[2])
+        {
+            uint32_t imageIndex = 0;
+            XR_CHECK(xrAcquireSwapchainImage(swapchain, nullptr, &imageIndex));
+            XrSwapchainImageWaitInfo waitInfo = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+            waitInfo.timeout = 0;
+            XR_CHECK(xrWaitSwapchainImage(swapchain, &waitInfo));
+            XR_CHECK(xrReleaseSwapchainImage(swapchain, nullptr));
+            views[0].subImage.imageRect.offset.x = -1;
+        },
+        XR_ERROR_SWAPCHAIN_RECT_INVALID);
+
+    runProjectionCase(
+        [](const RuntimeSessionContext&, XrSwapchain swapchain, XrCompositionLayerProjectionView (&views)[2])
+        {
+            uint32_t imageIndex = 0;
+            XR_CHECK(xrAcquireSwapchainImage(swapchain, nullptr, &imageIndex));
+            XrSwapchainImageWaitInfo waitInfo = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+            waitInfo.timeout = 0;
+            XR_CHECK(xrWaitSwapchainImage(swapchain, &waitInfo));
+            XR_CHECK(xrReleaseSwapchainImage(swapchain, nullptr));
+            views[0].pose.orientation.w = 0.0f;
+        },
+        XR_ERROR_POSE_INVALID);
+
+    runQuadCase(
+        [](const RuntimeSessionContext&, XrSwapchain, XrCompositionLayerQuad& quad)
+        {
+            quad.subImage.imageArrayIndex = 1;
+        },
+        XR_ERROR_VALIDATION_FAILURE);
+}
+
+TEST_CASE("EndFrame accepts valid frames it streams only in part", "[runtime][frame][layers]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+    XrSwapchain swapchain = CreateColorSwapchain(context.session, SelectColorSwapchainFormat(context.session));
+    uint32_t imageIndex = 0;
+    XR_CHECK(xrAcquireSwapchainImage(swapchain, nullptr, &imageIndex));
+    XrSwapchainImageWaitInfo waitInfo = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    waitInfo.timeout = 0;
+    XR_CHECK(xrWaitSwapchainImage(swapchain, &waitInfo));
+    XR_CHECK(xrReleaseSwapchainImage(swapchain, nullptr));
+
+    XrCompositionLayerProjectionView projectionViews[2] = {};
+    for (auto& view : projectionViews)
+    {
+        view.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+        view.pose.orientation.w = 1.0f;
+        view.fov = {-0.5f, 0.5f, 0.5f, -0.5f};
+        view.subImage.swapchain = swapchain;
+        view.subImage.imageRect.extent = {16, 16};
+    }
+    XrCompositionLayerProjection projectionLayer = {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    projectionLayer.space = context.localSpace;
+    projectionLayer.viewCount = 2;
+    projectionLayer.views = projectionViews;
+
+    XrCompositionLayerProjectionView invalidViews[2] = {projectionViews[0], projectionViews[1]};
+    invalidViews[0].pose.orientation.w = 0.0f;
+    XrCompositionLayerProjection invalidProjectionLayer = projectionLayer;
+    invalidProjectionLayer.views = invalidViews;
+
+    XrCompositionLayerQuad quadLayer = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+    quadLayer.space = context.localSpace;
+    quadLayer.pose.orientation.w = 1.0f;
+    quadLayer.size = {1.0f, 1.0f};
+    quadLayer.subImage.swapchain = swapchain;
+    quadLayer.subImage.imageRect.extent = {16, 16};
+
+    const auto* projection = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projectionLayer);
+    const auto* quad = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quadLayer);
+    std::vector<const XrCompositionLayerBaseHeader*> layers = {projection, projection};
+    XrResult expectedResult = XR_SUCCESS;
+    SECTION("Quad only")
+    {
+        layers = {quad};
+    }
+    SECTION("Two projection layers")
+    {
+        projectionLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    }
+    SECTION("XR_MIN_COMPOSITION_LAYERS_SUPPORTED projection layers")
+    {
+        layers.assign(XR_MIN_COMPOSITION_LAYERS_SUPPORTED, projection);
+    }
+    SECTION("XR_MIN_COMPOSITION_LAYERS_SUPPORTED quad layers")
+    {
+        layers.assign(XR_MIN_COMPOSITION_LAYERS_SUPPORTED, quad);
+    }
+    SECTION("More layers than supported")
+    {
+        layers.assign(XR_MIN_COMPOSITION_LAYERS_SUPPORTED + 1, quad);
+        expectedResult = XR_ERROR_LAYER_LIMIT_EXCEEDED;
+    }
+    SECTION("A projection layer after the streamed one is still validated")
+    {
+        layers[1] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&invalidProjectionLayer);
+        expectedResult = XR_ERROR_POSE_INVALID;
+    }
+
+    auto drainStates = [&]() {
+        std::vector<XrSessionState> states;
+        XrEventDataBuffer event = {XR_TYPE_EVENT_DATA_BUFFER};
+        while (xrPollEvent(context.instance, &event) == XR_SUCCESS)
+        {
+            if (event.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
+            {
+                states.push_back(reinterpret_cast<XrEventDataSessionStateChanged*>(&event)->state);
+            }
+            event = {XR_TYPE_EVENT_DATA_BUFFER};
+        }
+        return states;
+    };
+    drainStates();
+
+    XrFrameState frameState = {XR_TYPE_FRAME_STATE};
+    XR_CHECK(xrWaitFrame(context.session, nullptr, &frameState));
+    XR_BEGIN_FRAME_CHECK(xrBeginFrame(context.session, nullptr));
+    XrFrameEndInfo frameEndInfo = {XR_TYPE_FRAME_END_INFO};
+    frameEndInfo.displayTime = frameState.predictedDisplayTime;
+    frameEndInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    frameEndInfo.layerCount = static_cast<uint32_t>(layers.size());
+    frameEndInfo.layers = layers.data();
+    CHECK(xrEndFrame(context.session, &frameEndInfo) == expectedResult);
+    if (expectedResult == XR_SUCCESS)
+    {
+        // An accepted frame advances the session like any other, so an application that waits
+        // for VISIBLE behind a quad-only loading screen gets there.
+        const std::vector<XrSessionState> states = drainStates();
+        REQUIRE_FALSE(states.empty());
+        CHECK(states.back() == XR_SESSION_STATE_SYNCHRONIZED);
+    }
+
+    XR_CHECK(xrWaitFrame(context.session, nullptr, &frameState));
+    XR_BEGIN_FRAME_CHECK(xrBeginFrame(context.session, nullptr));
+    layers = {projection};
+    frameEndInfo.displayTime = frameState.predictedDisplayTime;
+    frameEndInfo.layerCount = 1;
+    frameEndInfo.layers = layers.data();
+    XR_CHECK(xrEndFrame(context.session, &frameEndInfo));
+    XR_CHECK(xrDestroySwapchain(swapchain));
+}
+
+TEST_CASE("EndFrame composites a quad over the single projection layer it streams", "[runtime][frame][layers]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+    XrSwapchain swapchain = CreateColorSwapchain(context.session, SelectColorSwapchainFormat(context.session));
+    uint32_t imageIndex = 0;
+    XR_CHECK(xrAcquireSwapchainImage(swapchain, nullptr, &imageIndex));
+    XrSwapchainImageWaitInfo waitInfo = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    waitInfo.timeout = 0;
+    XR_CHECK(xrWaitSwapchainImage(swapchain, &waitInfo));
+    XR_CHECK(xrReleaseSwapchainImage(swapchain, nullptr));
+
+    XrCompositionLayerProjectionView firstViews[2] = {};
+    for (auto& view : firstViews)
+    {
+        view.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+        view.pose.orientation.w = 1.0f;
+        view.fov = {-0.5f, 0.5f, 0.5f, -0.5f};
+        view.subImage.swapchain = swapchain;
+        view.subImage.imageRect.extent = {16, 16};
+    }
+    XrCompositionLayerProjectionView secondViews[2] = {firstViews[0], firstViews[1]};
+    secondViews[0].pose.position.x = 1.0f;
+    secondViews[1].pose.position.x = 1.0f;
+    XrCompositionLayerProjection firstProjection = {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    firstProjection.space = context.localSpace;
+    firstProjection.viewCount = 2;
+    firstProjection.views = firstViews;
+    XrCompositionLayerProjection secondProjection = firstProjection;
+    secondProjection.views = secondViews;
+
+    XrCompositionLayerQuad quadLayer = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+    quadLayer.space = context.localSpace;
+    quadLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    quadLayer.pose.orientation.w = 1.0f;
+    quadLayer.pose.position.z = -1.0f;
+    quadLayer.size = {1.0f, 1.0f};
+    quadLayer.subImage.swapchain = swapchain;
+    quadLayer.subImage.imageRect.extent = {16, 16};
+
+    // Only the first projection layer is streamed, and an overlay is placed with its poses,
+    // so a frame never mixes one projection layer's poses with another's images.
+    const XrCompositionLayerBaseHeader* layers[] = {
+        reinterpret_cast<const XrCompositionLayerBaseHeader*>(&firstProjection),
+        reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quadLayer),
+        reinterpret_cast<const XrCompositionLayerBaseHeader*>(&secondProjection),
+    };
+    XrFrameState frameState = {XR_TYPE_FRAME_STATE};
+    XR_CHECK(xrWaitFrame(context.session, nullptr, &frameState));
+    XR_BEGIN_FRAME_CHECK(xrBeginFrame(context.session, nullptr));
+    XrFrameEndInfo frameEndInfo = {XR_TYPE_FRAME_END_INFO};
+    frameEndInfo.displayTime = frameState.predictedDisplayTime;
+    frameEndInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    frameEndInfo.layerCount = 3;
+    frameEndInfo.layers = layers;
+    CHECK(xrEndFrame(context.session, &frameEndInfo) == XR_SUCCESS);
+
+    XR_CHECK(xrWaitFrame(context.session, nullptr, &frameState));
+    XR_BEGIN_FRAME_CHECK(xrBeginFrame(context.session, nullptr));
+    frameEndInfo.displayTime = frameState.predictedDisplayTime;
+    frameEndInfo.layerCount = 2;
+    CHECK(xrEndFrame(context.session, &frameEndInfo) == XR_SUCCESS);
+    XR_CHECK(xrDestroySwapchain(swapchain));
+}
+
+TEST_CASE("XR_KHR_convert_timespec_time bridges CLOCK_MONOTONIC and XrTime", "[runtime][timespec]")
+{
+    // Both conversion directions must be resolvable and must round-trip losslessly.
+    // Exercise the no-session fallback epoch (process-global) and the
+    // active-session time base.
+
+    SECTION("No-session fallback rejects bad input and round-trips losslessly")
+    {
+        const char* extensions[] = {XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME};
+        XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+        std::strncpy(createInfo.applicationInfo.applicationName, "oxrsys_runtime_api_tests",
+                     XR_MAX_APPLICATION_NAME_SIZE);
+        createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+        createInfo.enabledExtensionCount = 1;
+        createInfo.enabledExtensionNames = extensions;
+        XrInstance instance = XR_NULL_HANDLE;
+        XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+        auto convertTimespecToTime = reinterpret_cast<PFN_xrConvertTimespecTimeToTimeKHR>(
+            GetProc(instance, "xrConvertTimespecTimeToTimeKHR"));
+        auto convertTimeToTimespec = reinterpret_cast<PFN_xrConvertTimeToTimespecTimeKHR>(
+            GetProc(instance, "xrConvertTimeToTimespecTimeKHR"));
+
+        // Out-of-range tv_nsec is rejected in both parameter forms.
+        struct timespec badTimespec{};
+        badTimespec.tv_sec = 100;
+        badTimespec.tv_nsec = 1'000'000'000L; // == 1e9 is out of [0, 1e9)
+        XrTime scratch = 0;
+        CHECK(convertTimespecToTime(instance, &badTimespec, &scratch) ==
+              XR_ERROR_VALIDATION_FAILURE);
+        badTimespec.tv_nsec = -1;
+        CHECK(convertTimespecToTime(instance, &badTimespec, &scratch) ==
+              XR_ERROR_VALIDATION_FAILURE);
+
+        // A valid XrTime is strictly positive (CTS "Invalid times").
+        struct timespec invalidOut{};
+        CHECK(convertTimeToTimespec(instance, XrTime(0), &invalidOut) == XR_ERROR_TIME_INVALID);
+        CHECK(convertTimeToTimespec(instance, XrTime(-1), &invalidOut) == XR_ERROR_TIME_INVALID);
+
+        struct timespec now{};
+        REQUIRE(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+        XrTime xrTime = 0;
+        XR_CHECK(convertTimespecToTime(instance, &now, &xrTime));
+        struct timespec roundTrip{};
+        XR_CHECK(convertTimeToTimespec(instance, xrTime, &roundTrip));
+        CHECK(roundTrip.tv_sec == now.tv_sec);
+        CHECK(roundTrip.tv_nsec == now.tv_nsec);
+
+        XR_CHECK(xrDestroyInstance(instance));
+    }
+
+    SECTION("Active session shares its time base with predicted display time")
+    {
+        RuntimeSessionContext context({
+            XR_KHR_METAL_ENABLE_EXTENSION_NAME,
+            XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME,
+        });
+
+        auto convertTimespecToTime = reinterpret_cast<PFN_xrConvertTimespecTimeToTimeKHR>(
+            GetProc(context.instance, "xrConvertTimespecTimeToTimeKHR"));
+        auto convertTimeToTimespec = reinterpret_cast<PFN_xrConvertTimeToTimespecTimeKHR>(
+            GetProc(context.instance, "xrConvertTimeToTimespecTimeKHR"));
+
+        // Round-trip against the session's own time base.
+        struct timespec now{};
+        REQUIRE(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+        XrTime xrNow = 0;
+        XR_CHECK(convertTimespecToTime(context.instance, &now, &xrNow));
+        struct timespec roundTrip{};
+        XR_CHECK(convertTimeToTimespec(context.instance, xrNow, &roundTrip));
+        CHECK(roundTrip.tv_sec == now.tv_sec);
+        CHECK(roundTrip.tv_nsec == now.tv_nsec);
+
+        // Domain sanity: the XrTime for "now" must sit in the same base as the frame
+        // loop's predicted display time (within a generous few-second bound).
+        XrFrameState frameState = {XR_TYPE_FRAME_STATE};
+        XR_CHECK(xrWaitFrame(context.session, nullptr, &frameState));
+        const int64_t deltaNs =
+            std::llabs(static_cast<int64_t>(frameState.predictedDisplayTime) -
+                       static_cast<int64_t>(xrNow));
+        CHECK(deltaNs < 5'000'000'000LL);
+    }
+}
+
+TEST_CASE("EndFrame takes a cylinder layer only when its extension is enabled", "[runtime][frame][layers]")
+{
+    auto runCylinderCase = [](RuntimeSessionContext& context, XrResult expectedResult)
+    {
+        XrFrameState frameState = {XR_TYPE_FRAME_STATE};
+        XR_CHECK(xrWaitFrame(context.session, nullptr, &frameState));
+        XR_BEGIN_FRAME_CHECK(xrBeginFrame(context.session, nullptr));
+
+        const int64_t format = SelectColorSwapchainFormat(context.session);
+        XrSwapchain swapchain = CreateColorSwapchain(context.session, format);
+        uint32_t imageIndex = 0;
+        XR_CHECK(xrAcquireSwapchainImage(swapchain, nullptr, &imageIndex));
+        XrSwapchainImageWaitInfo waitInfo = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+        waitInfo.timeout = 0;
+        XR_CHECK(xrWaitSwapchainImage(swapchain, &waitInfo));
+        XR_CHECK(xrReleaseSwapchainImage(swapchain, nullptr));
+
+        XrCompositionLayerProjectionView projectionViews[2] = {};
+        for (auto& view : projectionViews)
+        {
+            view.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+            view.pose.orientation.w = 1.0f;
+            view.fov.angleLeft = -0.5f;
+            view.fov.angleRight = 0.5f;
+            view.fov.angleUp = 0.5f;
+            view.fov.angleDown = -0.5f;
+            view.subImage.swapchain = swapchain;
+            view.subImage.imageRect.extent = {16, 16};
+        }
+        XrCompositionLayerProjection projectionLayer = {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+        projectionLayer.space = context.localSpace;
+        projectionLayer.viewCount = 2;
+        projectionLayer.views = projectionViews;
+
+        XrCompositionLayerCylinderKHR cylinderLayer = {XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
+        cylinderLayer.space = context.localSpace;
+        cylinderLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        cylinderLayer.pose.orientation.w = 1.0f;
+        cylinderLayer.pose.position.z = -1.0f;
+        cylinderLayer.radius = 1.0f;
+        cylinderLayer.centralAngle = 1.0f;
+        cylinderLayer.aspectRatio = 2.0f;
+        cylinderLayer.subImage.swapchain = swapchain;
+        cylinderLayer.subImage.imageRect.extent = {16, 16};
+
+        const XrCompositionLayerBaseHeader* layers[] = {
+            reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projectionLayer),
+            reinterpret_cast<const XrCompositionLayerBaseHeader*>(&cylinderLayer),
+        };
+        XrFrameEndInfo frameEndInfo = {XR_TYPE_FRAME_END_INFO};
+        frameEndInfo.displayTime = frameState.predictedDisplayTime;
+        frameEndInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+        frameEndInfo.layerCount = 2;
+        frameEndInfo.layers = layers;
+
+        CHECK(xrEndFrame(context.session, &frameEndInfo) == expectedResult);
+        XR_CHECK(xrDestroySwapchain(swapchain));
+    };
+
+    {
+        RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME, XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME});
+        runCylinderCase(context, XR_SUCCESS);
+    }
+    {
+        RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+        runCylinderCase(context, XR_ERROR_LAYER_INVALID);
+    }
+}
+
+TEST_CASE("EndFrame accepts a released projection image while another swapchain image is acquired", "[runtime][frame][swapchain]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+    XrFrameState frameState = {XR_TYPE_FRAME_STATE};
+    XR_CHECK(xrWaitFrame(context.session, nullptr, &frameState));
+    XR_BEGIN_FRAME_CHECK(xrBeginFrame(context.session, nullptr));
+
+    const int64_t format = SelectColorSwapchainFormat(context.session);
+    XrSwapchain swapchain = CreateColorSwapchain(context.session, format);
+
+    XrSwapchainImageWaitInfo waitInfo = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    waitInfo.timeout = 0;
+
+    uint32_t releasedImageIndex = 0;
+    XR_CHECK(xrAcquireSwapchainImage(swapchain, nullptr, &releasedImageIndex));
+    XR_CHECK(xrWaitSwapchainImage(swapchain, &waitInfo));
+    XR_CHECK(xrReleaseSwapchainImage(swapchain, nullptr));
+
+    uint32_t pipelinedImageIndex = 0;
+    XR_CHECK(xrAcquireSwapchainImage(swapchain, nullptr, &pipelinedImageIndex));
+
+    XrCompositionLayerProjectionView projectionViews[2] = {};
+    for (auto& view : projectionViews)
+    {
+        view.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+        view.pose.orientation.w = 1.0f;
+        view.fov.angleLeft = -0.5f;
+        view.fov.angleRight = 0.5f;
+        view.fov.angleUp = 0.5f;
+        view.fov.angleDown = -0.5f;
+        view.subImage.swapchain = swapchain;
+        view.subImage.imageRect.extent = {16, 16};
+    }
+
+    XrCompositionLayerProjection projectionLayer = {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    projectionLayer.space = context.localSpace;
+    projectionLayer.viewCount = 2;
+    projectionLayer.views = projectionViews;
+
+    const XrCompositionLayerBaseHeader* layers[] = {
+        reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projectionLayer),
+    };
+
+    XrFrameEndInfo frameEndInfo = {XR_TYPE_FRAME_END_INFO};
+    frameEndInfo.displayTime = frameState.predictedDisplayTime;
+    frameEndInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    frameEndInfo.layerCount = 1;
+    frameEndInfo.layers = layers;
+
+    CHECK(xrEndFrame(context.session, &frameEndInfo) == XR_SUCCESS);
+
+    XR_CHECK(xrWaitSwapchainImage(swapchain, &waitInfo));
+    XR_CHECK(xrReleaseSwapchainImage(swapchain, nullptr));
+    XR_CHECK(xrDestroySwapchain(swapchain));
+}
+
+TEST_CASE("Space and view validation matches CTS expectations", "[runtime][space]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    XrExtent2Df bounds = {};
+    CHECK(xrGetReferenceSpaceBoundsRect(context.session, XR_REFERENCE_SPACE_TYPE_MAX_ENUM, &bounds) ==
+          XR_ERROR_REFERENCE_SPACE_UNSUPPORTED);
+
+    XrViewLocateInfo locateInfo = {XR_TYPE_VIEW_LOCATE_INFO};
+    locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+    locateInfo.displayTime = 0;
+    locateInfo.space = context.localSpace;
+
+    XrViewState viewState = {XR_TYPE_VIEW_STATE};
+    uint32_t viewCountOutput = 0;
+    std::array<XrView, 2> views = {{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}}};
+    CHECK(xrLocateViews(context.session, &locateInfo, &viewState,
+                        static_cast<uint32_t>(views.size()), &viewCountOutput, views.data()) ==
+          XR_ERROR_TIME_INVALID);
+
+    locateInfo.displayTime = -42;
+    CHECK(xrLocateViews(context.session, &locateInfo, &viewState,
+                        static_cast<uint32_t>(views.size()), &viewCountOutput, views.data()) ==
+          XR_ERROR_TIME_INVALID);
+
+    locateInfo.displayTime = 1;
+    locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_MONO;
+    CHECK(xrLocateViews(context.session, &locateInfo, &viewState,
+                        static_cast<uint32_t>(views.size()), &viewCountOutput, views.data()) ==
+          XR_ERROR_VIEW_CONFIGURATION_TYPE_UNSUPPORTED);
+
+    XrSpaceLocation location = {XR_TYPE_SPACE_LOCATION};
+    CHECK(xrLocateSpace(context.localSpace, context.localSpace, 0, &location) ==
+          XR_ERROR_TIME_INVALID);
+    CHECK(xrLocateSpace(context.localSpace, context.localSpace, -42, &location) ==
+          XR_ERROR_TIME_INVALID);
+}
+
+TEST_CASE("Located views honor translated and rotated reference spaces", "[runtime][spaces][views]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    XrViewLocateInfo locateInfo = {XR_TYPE_VIEW_LOCATE_INFO};
+    locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+    locateInfo.displayTime = 1;
+    locateInfo.space = context.localSpace;
+    XrViewState viewState = {XR_TYPE_VIEW_STATE};
+    uint32_t viewCount = 0;
+    std::array<XrView, 2> localViews = {{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}}};
+    XR_CHECK(xrLocateViews(context.session, &locateInfo, &viewState,
+                          static_cast<uint32_t>(localViews.size()), &viewCount, localViews.data()));
+    REQUIRE(viewCount == 2);
+    REQUIRE((viewState.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0);
+
+    for (XrReferenceSpaceType type : {XR_REFERENCE_SPACE_TYPE_LOCAL, XR_REFERENCE_SPACE_TYPE_VIEW})
+    {
+        CAPTURE(type);
+        XrReferenceSpaceCreateInfo createInfo = {XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+        createInfo.referenceSpaceType = type;
+        createInfo.poseInReferenceSpace.position = {1.0f, 2.0f, 3.0f};
+        createInfo.poseInReferenceSpace.orientation = {0.0f, 0.0f, 0.70710678f, 0.70710678f};
+        XrSpace space = XR_NULL_HANDLE;
+        XR_CHECK(xrCreateReferenceSpace(context.session, &createInfo, &space));
+
+        XrSpaceLocation location = {XR_TYPE_SPACE_LOCATION};
+        XR_CHECK(xrLocateSpace(space, context.localSpace, locateInfo.displayTime, &location));
+        REQUIRE((location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0);
+
+        locateInfo.space = space;
+        std::array<XrView, 2> views = {{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}}};
+        XR_CHECK(xrLocateViews(context.session, &locateInfo, &viewState,
+                              static_cast<uint32_t>(views.size()), &viewCount, views.data()));
+        CHECK((viewState.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0);
+        for (size_t i = 0; i < views.size(); ++i)
+        {
+            // A +90 degree Z origin rotation maps a world delta (x, y, z) to (y, -x, z).
+            CHECK_THAT(views[i].pose.position.x,
+                       WithinAbs(localViews[i].pose.position.y - location.pose.position.y, 0.001f));
+            CHECK_THAT(views[i].pose.position.y,
+                       WithinAbs(location.pose.position.x - localViews[i].pose.position.x, 0.001f));
+            CHECK_THAT(views[i].pose.position.z,
+                       WithinAbs(localViews[i].pose.position.z - location.pose.position.z, 0.001f));
+            CHECK_THAT(views[i].pose.orientation.z, WithinAbs(-0.70710678f, 0.001f));
+            CHECK_THAT(views[i].pose.orientation.w, WithinAbs(0.70710678f, 0.001f));
+            CHECK(views[i].fov.angleLeft == localViews[i].fov.angleLeft);
+            CHECK(views[i].fov.angleRight == localViews[i].fov.angleRight);
+        }
+        XR_CHECK(xrDestroySpace(space));
+    }
+}
+
+TEST_CASE("Reference space bounds remain unavailable without boundary data", "[runtime][spaces]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    uint32_t spaceCount = 0;
+    XR_CHECK(xrEnumerateReferenceSpaces(context.session, 0, &spaceCount, nullptr));
+    std::vector<XrReferenceSpaceType> spaces(spaceCount);
+    XR_CHECK(xrEnumerateReferenceSpaces(context.session, spaceCount, &spaceCount, spaces.data()));
+
+    for (XrReferenceSpaceType space : spaces)
+    {
+        CAPTURE(space);
+        XrExtent2Df bounds = {123.0f, 456.0f};
+        CHECK(xrGetReferenceSpaceBoundsRect(context.session, space, &bounds) ==
+              XR_SPACE_BOUNDS_UNAVAILABLE);
+        CHECK(bounds.width == 0.0f);
+        CHECK(bounds.height == 0.0f);
+    }
+}
+
+TEST_CASE("Swapchain image order follows acquire wait release rules", "[runtime][swapchain]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    XrSwapchainImageWaitInfo waitInfo = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    waitInfo.timeout = 0;
+
+    int64_t format = SelectColorSwapchainFormat(context.session);
+    XrSwapchain swapchain = CreateColorSwapchain(context.session, format);
+
+    uint32_t imageCount = 0;
+    XR_CHECK(xrEnumerateSwapchainImages(swapchain, 0, &imageCount, nullptr));
+    REQUIRE(imageCount > 0);
+
+    XrSwapchainImageReleaseInfo releaseInfo = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    CHECK(xrWaitSwapchainImage(swapchain, &waitInfo) == XR_ERROR_CALL_ORDER_INVALID);
+    CHECK(xrReleaseSwapchainImage(swapchain, &releaseInfo) == XR_ERROR_CALL_ORDER_INVALID);
+
+    std::vector<uint32_t> acquiredIndices(imageCount, UINT32_MAX);
+    for (uint32_t i = 0; i < imageCount; ++i)
+    {
+        XR_CHECK(xrAcquireSwapchainImage(swapchain, nullptr, &acquiredIndices[i]));
+        CHECK(xrReleaseSwapchainImage(swapchain, &releaseInfo) == XR_ERROR_CALL_ORDER_INVALID);
+    }
+
+    uint32_t extraIndex = UINT32_MAX;
+    CHECK(xrAcquireSwapchainImage(swapchain, nullptr, &extraIndex) == XR_ERROR_CALL_ORDER_INVALID);
+
+    for (uint32_t i = 0; i < imageCount; ++i)
+    {
+        XR_CHECK(xrWaitSwapchainImage(swapchain, &waitInfo));
+        CHECK(xrWaitSwapchainImage(swapchain, &waitInfo) == XR_ERROR_CALL_ORDER_INVALID);
+        XR_CHECK(xrReleaseSwapchainImage(swapchain, nullptr));
+    }
+
+    XR_CHECK(xrDestroySwapchain(swapchain));
+
+    XrSwapchain staticSwapchain =
+        CreateColorSwapchain(context.session, format, XR_SWAPCHAIN_CREATE_STATIC_IMAGE_BIT);
+    XR_CHECK(xrAcquireSwapchainImage(staticSwapchain, nullptr, &extraIndex));
+    XR_CHECK(xrWaitSwapchainImage(staticSwapchain, &waitInfo));
+    XR_CHECK(xrReleaseSwapchainImage(staticSwapchain, nullptr));
+    CHECK(xrAcquireSwapchainImage(staticSwapchain, nullptr, &extraIndex) == XR_ERROR_CALL_ORDER_INVALID);
+    XR_CHECK(xrDestroySwapchain(staticSwapchain));
+}
+
+TEST_CASE("Swapchain creation propagates backend initialization failures", "[runtime][swapchain]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    XrSwapchainCreateInfo createInfo = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+    createInfo.format = 0;
+    createInfo.sampleCount = 1;
+    createInfo.width = 16;
+    createInfo.height = 16;
+    createInfo.faceCount = 1;
+    createInfo.arraySize = 1;
+    createInfo.mipCount = 1;
+
+    XrSwapchain swapchain = reinterpret_cast<XrSwapchain>(static_cast<uintptr_t>(0x1));
+    CHECK(xrCreateSwapchain(context.session, &createInfo, &swapchain) ==
+          XR_ERROR_SWAPCHAIN_FORMAT_UNSUPPORTED);
+    CHECK(swapchain == XR_NULL_HANDLE);
+}
+
+TEST_CASE("Unsupported swapchain mip counts report feature unsupported", "[runtime][swapchain]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    XrSwapchainCreateInfo createInfo = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    createInfo.format = SelectColorSwapchainFormat(context.session);
+    createInfo.sampleCount = 1;
+    createInfo.width = 16;
+    createInfo.height = 16;
+    createInfo.faceCount = 1;
+    createInfo.arraySize = 1;
+    createInfo.mipCount = 2;
+
+    XrSwapchain swapchain = reinterpret_cast<XrSwapchain>(static_cast<uintptr_t>(0x1));
+    CHECK(xrCreateSwapchain(context.session, &createInfo, &swapchain) ==
+          XR_ERROR_FEATURE_UNSUPPORTED);
+    CHECK(swapchain == XR_NULL_HANDLE);
+}
+
+TEST_CASE("Swapchain creation validates supported flags and compatible usage",
+          "[runtime][swapchain][validation]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+    XrSwapchainCreateInfo createInfo = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
+                            XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+    createInfo.format = SelectColorSwapchainFormat(context.session);
+    createInfo.sampleCount = 1;
+    createInfo.width = 16;
+    createInfo.height = 16;
+    createInfo.faceCount = 1;
+    createInfo.arraySize = 1;
+    createInfo.mipCount = 1;
+
+    XrSwapchain swapchain = reinterpret_cast<XrSwapchain>(static_cast<uintptr_t>(0x1));
+    createInfo.usageFlags |= XR_SWAPCHAIN_USAGE_UNORDERED_ACCESS_BIT;
+    CHECK(xrCreateSwapchain(context.session, &createInfo, &swapchain) ==
+          XR_ERROR_FEATURE_UNSUPPORTED);
+    CHECK(swapchain == XR_NULL_HANDLE);
+
+    swapchain = reinterpret_cast<XrSwapchain>(static_cast<uintptr_t>(0x1));
+    createInfo.format = 70; // MTLPixelFormatRGBA8Unorm, Blender's first advertised match.
+    createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
+                            XR_SWAPCHAIN_USAGE_SAMPLED_BIT |
+                            XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+    XR_CHECK(xrCreateSwapchain(context.session, &createInfo, &swapchain));
+    REQUIRE(swapchain != XR_NULL_HANDLE);
+    XR_CHECK(xrDestroySwapchain(swapchain));
+
+    swapchain = reinterpret_cast<XrSwapchain>(static_cast<uintptr_t>(0x1));
+    createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    createInfo.createFlags = XR_SWAPCHAIN_CREATE_PROTECTED_CONTENT_BIT;
+    CHECK(xrCreateSwapchain(context.session, &createInfo, &swapchain) ==
+          XR_ERROR_FEATURE_UNSUPPORTED);
+    CHECK(swapchain == XR_NULL_HANDLE);
+
+    swapchain = reinterpret_cast<XrSwapchain>(static_cast<uintptr_t>(0x1));
+    createInfo.createFlags = 0;
+    // Godot's Metal driver renders through an sRGB/UNORM view of the swapchain texture.
+    createInfo.format = 71; // MTLPixelFormatRGBA8Unorm_sRGB, Godot 4 Metal's first match.
+    createInfo.arraySize = 2;
+    createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
+                            XR_SWAPCHAIN_USAGE_SAMPLED_BIT |
+                            XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT;
+    XR_CHECK(xrCreateSwapchain(context.session, &createInfo, &swapchain));
+    REQUIRE(swapchain != XR_NULL_HANDLE);
+    XR_CHECK(xrDestroySwapchain(swapchain));
+    createInfo.format = 70;
+    createInfo.arraySize = 1;
+
+    swapchain = reinterpret_cast<XrSwapchain>(static_cast<uintptr_t>(0x1));
+    createInfo.createFlags = 0;
+    createInfo.usageFlags = XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    CHECK(xrCreateSwapchain(context.session, &createInfo, &swapchain) ==
+          XR_ERROR_FEATURE_UNSUPPORTED);
+    CHECK(swapchain == XR_NULL_HANDLE);
+
+    swapchain = reinterpret_cast<XrSwapchain>(static_cast<uintptr_t>(0x1));
+    createInfo.format = 252; // MTLPixelFormatDepth32Float, advertised by the runtime.
+    createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    CHECK(xrCreateSwapchain(context.session, &createInfo, &swapchain) ==
+          XR_ERROR_FEATURE_UNSUPPORTED);
+    CHECK(swapchain == XR_NULL_HANDLE);
+}
+
+TEST_CASE("Distinct swapchains can be created and destroyed concurrently",
+          "[runtime][swapchain][threading]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+    const int64_t format = SelectColorSwapchainFormat(context.session);
+    constexpr size_t threadCount = 4;
+    constexpr size_t iterations = 8;
+    std::array<XrResult, threadCount> results{};
+    results.fill(XR_SUCCESS);
+    std::atomic<size_t> ready{0};
+    std::atomic_bool start{false};
+    std::array<std::thread, threadCount> threads;
+
+    for (size_t threadIndex = 0; threadIndex < threadCount; ++threadIndex)
+    {
+        threads[threadIndex] = std::thread([&, threadIndex] {
+            ready.fetch_add(1, std::memory_order_release);
+            while (!start.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+
+            for (size_t iteration = 0; iteration < iterations; ++iteration)
+            {
+                XrSwapchainCreateInfo createInfo = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
+                createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
+                                        XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+                createInfo.format = format;
+                createInfo.sampleCount = 1;
+                createInfo.width = 16;
+                createInfo.height = 16;
+                createInfo.faceCount = 1;
+                createInfo.arraySize = 1;
+                createInfo.mipCount = 1;
+                XrSwapchain swapchain = XR_NULL_HANDLE;
+                results[threadIndex] =
+                    xrCreateSwapchain(context.session, &createInfo, &swapchain);
+                if (results[threadIndex] != XR_SUCCESS)
+                {
+                    return;
+                }
+                results[threadIndex] = xrDestroySwapchain(swapchain);
+                if (results[threadIndex] != XR_SUCCESS)
+                {
+                    return;
+                }
+            }
+        });
+    }
+
+    while (ready.load(std::memory_order_acquire) != threadCount)
+    {
+        std::this_thread::yield();
+    }
+    start.store(true, std::memory_order_release);
+    for (auto& thread : threads)
+    {
+        thread.join();
+    }
+    for (const XrResult result : results)
+    {
+        CHECK(result == XR_SUCCESS);
+    }
+}
+
+// xrRequestExitSession racing the first xrEndFrame: EndFrame clears frameBegun_ and then advances the
+// session state, so without one lock around both transition paths an exit request landing in that
+// window could emit STOPPING and then be overwritten back to SYNCHRONIZED, leaving xrEndSession to
+// fail with XR_ERROR_SESSION_NOT_STOPPING. Every interleaving must still reach STOPPING and end.
+TEST_CASE("EndSession waits for a haptics call still using the streaming server",
+          "[runtime][actions][haptics][loopback]")
+{
+    const bool tcp = GENERATE(false, true);
+    CAPTURE(tcp);
+
+    // Hold every haptics send on the live server for 1 s, and end the session inside that window,
+    // so the call is always still using the server when xrEndSession stops it. CI runners can take
+    // several hundred milliseconds per frame to reach STOPPING, so the window must cover a few frames.
+    setenv("OXRSYS_TEST_SEND_HAPTICS_DELAY_US", "1000000", 1);
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+    unsetenv("OXRSYS_TEST_SEND_HAPTICS_DELAY_US");
+    XrPath handPaths[2] = {context.Path("/user/hand/left"), context.Path("/user/hand/right")};
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "haptics", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Haptics", XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrAction hapticAction = XR_NULL_HANDLE;
+    XrActionCreateInfo hapticCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    hapticCreateInfo.actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT;
+    hapticCreateInfo.countSubactionPaths = 2;
+    hapticCreateInfo.subactionPaths = handPaths;
+    std::strncpy(hapticCreateInfo.actionName, "haptic_action", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(hapticCreateInfo.localizedActionName, "Haptic Action", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &hapticCreateInfo, &hapticAction));
+
+    XrActionSuggestedBinding bindings[] = {
+        {hapticAction, context.Path("/user/hand/left/output/haptic")},
+        {hapticAction, context.Path("/user/hand/right/output/haptic")},
+    };
+    XrInteractionProfileSuggestedBinding suggestedBindings = {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.interactionProfile = context.Path("/interaction_profiles/oculus/touch_controller");
+    suggestedBindings.suggestedBindings = bindings;
+    suggestedBindings.countSuggestedBindings = 2;
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+    XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attachInfo));
+
+    LoopbackTrackingPeer peer(tcp);
+    oxr::protocol::TrackingPacket packet = {};
+    packet.headOrientation[3] = 1.0f;
+    // Haptics follow each hand's active interaction profiles, which come from its streamed controller.
+    packet.trackingFlags = oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE |
+                           oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE;
+    packet.leftControllerRot[3] = 1.0f;
+    packet.rightControllerRot[3] = 1.0f;
+
+    XrHapticActionInfo hapticActionInfo = {XR_TYPE_HAPTIC_ACTION_INFO};
+    hapticActionInfo.action = hapticAction;
+    hapticActionInfo.subactionPath = handPaths[1];
+    XrHapticVibration vibration = {XR_TYPE_HAPTIC_VIBRATION};
+    vibration.amplitude = 0.5f;
+    vibration.duration = 20'000'000;
+    vibration.frequency = 160.0f;
+
+    // Wait until the client is connected and a haptics command reaches it.
+    oxr::protocol::HapticsCommand command = {};
+    bool received = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!received && std::chrono::steady_clock::now() < deadline)
+    {
+        peer.SendTracking(packet, sizeof(packet));
+        PumpTrackingFrame(context.session);
+        const XrResult result = xrApplyHapticFeedback(context.session, &hapticActionInfo,
+                                                      reinterpret_cast<XrHapticBaseHeader*>(&vibration));
+        if (result == XR_SUCCESS)
+        {
+            received = peer.ReadHaptics(command, std::chrono::milliseconds(50));
+        }
+    }
+    REQUIRE(received);
+
+    XrSessionState lastState = XR_SESSION_STATE_UNKNOWN;
+    auto drainStates = [&]() {
+        XrEventDataBuffer event = {XR_TYPE_EVENT_DATA_BUFFER};
+        while (xrPollEvent(context.instance, &event) == XR_SUCCESS)
+        {
+            if (event.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
+            {
+                lastState = reinterpret_cast<XrEventDataSessionStateChanged*>(&event)->state;
+            }
+            event = {XR_TYPE_EVENT_DATA_BUFFER};
+        }
+    };
+    drainStates();
+    REQUIRE(lastState == XR_SESSION_STATE_FOCUSED);
+
+    // A second app thread sends haptics; it passes the FOCUSED check and is held on the live server.
+    vibration.amplitude = 0.75f;
+    std::atomic<bool> hapticsStarted{false};
+    std::atomic<bool> hapticsReturned{false};
+    XrResult hapticsResult = XR_ERROR_RUNTIME_FAILURE;
+    std::thread hapticsThread([&] {
+        hapticsStarted.store(true, std::memory_order_release);
+        hapticsResult = xrApplyHapticFeedback(context.session, &hapticActionInfo,
+                                              reinterpret_cast<XrHapticBaseHeader*>(&vibration));
+        hapticsReturned.store(true, std::memory_order_release);
+    });
+    while (!hapticsStarted.load(std::memory_order_acquire))
+    {
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    // Meanwhile the render thread exits and ends the session while the haptics call is in flight.
+    XR_CHECK(xrRequestExitSession(context.session));
+    for (int frame = 0; frame < 8 && lastState != XR_SESSION_STATE_STOPPING; ++frame)
+    {
+        peer.SendTracking(packet, sizeof(packet));
+        PumpTrackingFrame(context.session);
+        drainStates();
+    }
+    const bool reachedStopping = lastState == XR_SESSION_STATE_STOPPING;
+    const bool hapticsReturnedBeforeEnd = hapticsReturned.load(std::memory_order_acquire);
+    const XrResult endResult = reachedStopping ? xrEndSession(context.session) : XR_ERROR_SESSION_NOT_STOPPING;
+    hapticsThread.join();
+    REQUIRE(reachedStopping);
+    REQUIRE_FALSE(hapticsReturnedBeforeEnd);
+    CHECK(endResult == XR_SUCCESS);
+    CHECK(hapticsResult == XR_SUCCESS);
+
+    // The server was stopped only after the in-flight call finished with it, so the command arrived.
+    REQUIRE(peer.ReadHaptics(command, std::chrono::seconds(2)));
+    CHECK(command.hand == 1);
+    CHECK_THAT(command.amplitude, WithinAbs(0.75f, 0.0001f));
+}
+
+TEST_CASE("RequestExitSession racing the first frame submission still reaches STOPPING", "[runtime][loader]")
+{
+    // Hold the frame-driven READY -> SYNCHRONIZED step for 2 ms after its branch is chosen, and send the
+    // exit request 1 ms into that window, so the bad interleaving happens every time.
+    setenv("OXRSYS_TEST_ENDFRAME_ADVANCE_DELAY_US", "2000", 1);
+    for (int iteration = 0; iteration < 10; ++iteration)
+    {
+        RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+
+        XrSessionState lastState = XR_SESSION_STATE_UNKNOWN;
+        bool sawStopping = false;
+        bool regressed = false;
+        auto drainStates = [&]() {
+            XrEventDataBuffer event = {XR_TYPE_EVENT_DATA_BUFFER};
+            while (xrPollEvent(context.instance, &event) == XR_SUCCESS)
+            {
+                if (event.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
+                {
+                    lastState = reinterpret_cast<XrEventDataSessionStateChanged*>(&event)->state;
+                    regressed = regressed || (sawStopping && lastState != XR_SESSION_STATE_STOPPING);
+                    sawStopping = sawStopping || lastState == XR_SESSION_STATE_STOPPING;
+                }
+                event = {XR_TYPE_EVENT_DATA_BUFFER};
+            }
+        };
+        drainStates();
+
+        XrFrameState frameState = {XR_TYPE_FRAME_STATE};
+        XR_CHECK(xrWaitFrame(context.session, nullptr, &frameState));
+        XR_CHECK(xrBeginFrame(context.session, nullptr));
+        XrFrameEndInfo endInfo = {XR_TYPE_FRAME_END_INFO};
+        endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+        endInfo.displayTime = frameState.predictedDisplayTime;
+
+        std::atomic<bool> go{false};
+        XrResult exitResult = XR_ERROR_RUNTIME_FAILURE;
+        std::thread exiter([&] {
+            while (!go.load(std::memory_order_acquire))
+            {
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(1000));
+            exitResult = xrRequestExitSession(context.session);
+        });
+        go.store(true, std::memory_order_release);
+        CHECK(xrEndFrame(context.session, &endInfo) == XR_SUCCESS);
+        exiter.join();
+        CHECK(exitResult == XR_SUCCESS);
+
+        // An app ends the session as soon as it sees STOPPING. If the race emitted STOPPING, the state
+        // must not have regressed after it, and xrEndSession must succeed right away.
+        sawStopping = false;
+        regressed = false;
+        drainStates();
+        if (sawStopping)
+        {
+            CHECK_FALSE(regressed);
+            CHECK(xrEndSession(context.session) == XR_SUCCESS);
+            continue;
+        }
+        // Otherwise the exit request landed after the transition: a rendering session advances one
+        // state per frame, so keep the loop running until STOPPING, then end.
+        for (int frame = 0; frame < 8 && lastState != XR_SESSION_STATE_STOPPING; ++frame)
+        {
+            XR_CHECK(xrWaitFrame(context.session, nullptr, &frameState));
+            XR_CHECK(xrBeginFrame(context.session, nullptr));
+            endInfo.displayTime = frameState.predictedDisplayTime;
+            XR_CHECK(xrEndFrame(context.session, &endInfo));
+            drainStates();
+        }
+        REQUIRE(lastState == XR_SESSION_STATE_STOPPING);
+        CHECK(xrEndSession(context.session) == XR_SUCCESS);
+    }
+    unsetenv("OXRSYS_TEST_ENDFRAME_ADVANCE_DELAY_US");
+}
+
+// Haptics are sent from the application's threads while the runtime also writes stream config records,
+// so every USB control record must reach the client whole.
+TEST_CASE("Concurrent haptic feedback keeps USB control records whole", "[runtime][actions][haptics][loopback]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+    XrPath handPaths[2] = {context.Path("/user/hand/left"), context.Path("/user/hand/right")};
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "haptics", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Haptics", XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrAction hapticAction = XR_NULL_HANDLE;
+    XrActionCreateInfo hapticCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    hapticCreateInfo.actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT;
+    hapticCreateInfo.countSubactionPaths = 2;
+    hapticCreateInfo.subactionPaths = handPaths;
+    std::strncpy(hapticCreateInfo.actionName, "haptic_action", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(hapticCreateInfo.localizedActionName, "Haptic Action", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &hapticCreateInfo, &hapticAction));
+
+    XrActionSuggestedBinding bindings[] = {
+        {hapticAction, context.Path("/user/hand/left/output/haptic")},
+        {hapticAction, context.Path("/user/hand/right/output/haptic")},
+    };
+    XrInteractionProfileSuggestedBinding suggestedBindings = {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.interactionProfile = context.Path("/interaction_profiles/oculus/touch_controller");
+    suggestedBindings.suggestedBindings = bindings;
+    suggestedBindings.countSuggestedBindings = 2;
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+    XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attachInfo));
+
+    LoopbackTrackingPeer peer(true);
+    oxr::protocol::TrackingPacket packet = {};
+    packet.headOrientation[3] = 1.0f;
+    packet.trackingFlags = oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE |
+                           oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE;
+    packet.leftControllerRot[3] = 1.0f;
+    packet.rightControllerRot[3] = 1.0f;
+
+    XrHapticVibration vibration = {XR_TYPE_HAPTIC_VIBRATION};
+    vibration.amplitude = 0.5f;
+    vibration.duration = 20'000'000;
+    XrHapticActionInfo hapticActionInfo = {XR_TYPE_HAPTIC_ACTION_INFO};
+    hapticActionInfo.action = hapticAction;
+    hapticActionInfo.subactionPath = handPaths[0];
+
+    oxr::protocol::HapticsCommand command = {};
+    bool received = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!received && std::chrono::steady_clock::now() < deadline)
+    {
+        peer.SendTracking(packet, sizeof(packet));
+        PumpTrackingFrame(context.session);
+        if (xrApplyHapticFeedback(context.session, &hapticActionInfo,
+                                  reinterpret_cast<XrHapticBaseHeader*>(&vibration)) == XR_SUCCESS)
+        {
+            received = peer.ReadHaptics(command, std::chrono::milliseconds(50));
+        }
+    }
+    REQUIRE(received);
+
+    constexpr int kAppliesPerHand = 1000;
+    std::atomic_int failedApplies{0};
+    auto applyFromThread = [&](XrPath hand) {
+        XrHapticActionInfo info = {XR_TYPE_HAPTIC_ACTION_INFO};
+        info.action = hapticAction;
+        info.subactionPath = hand;
+        for (int i = 0; i < kAppliesPerHand; ++i)
+        {
+            if (xrApplyHapticFeedback(context.session, &info,
+                                      reinterpret_cast<const XrHapticBaseHeader*>(&vibration)) != XR_SUCCESS)
+            {
+                failedApplies.fetch_add(1);
+            }
+        }
+    };
+    std::thread left(applyFromThread, handPaths[0]);
+    std::thread right(applyFromThread, handPaths[1]);
+
+    // ReadHaptics refuses a record whose header is not a record header, which is what a header and a
+    // payload interleaved from two threads produce.
+    int commands = 0;
+    while (peer.ReadHaptics(command, std::chrono::milliseconds(500)))
+    {
+        ++commands;
+    }
+    left.join();
+    right.join();
+    CHECK(failedApplies.load() == 0);
+    CHECK(commands >= 2 * kAppliesPerHand);
+}
+
+TEST_CASE("Haptic feedback reaches the connected headset client", "[runtime][actions][haptics][loopback]")
+{
+    const bool tcp = GENERATE(false, true);
+    CAPTURE(tcp);
+
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+    XrPath handPaths[2] = {context.Path("/user/hand/left"), context.Path("/user/hand/right")};
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "haptics", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Haptics", XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    XrAction hapticAction = XR_NULL_HANDLE;
+    XrActionCreateInfo hapticCreateInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    hapticCreateInfo.actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT;
+    hapticCreateInfo.countSubactionPaths = 2;
+    hapticCreateInfo.subactionPaths = handPaths;
+    std::strncpy(hapticCreateInfo.actionName, "haptic_action", XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(hapticCreateInfo.localizedActionName, "Haptic Action", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &hapticCreateInfo, &hapticAction));
+
+    XrActionSuggestedBinding bindings[] = {
+        {hapticAction, context.Path("/user/hand/left/output/haptic")},
+        {hapticAction, context.Path("/user/hand/right/output/haptic")},
+    };
+    XrInteractionProfileSuggestedBinding suggestedBindings = {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.interactionProfile = context.Path("/interaction_profiles/oculus/touch_controller");
+    suggestedBindings.suggestedBindings = bindings;
+    suggestedBindings.countSuggestedBindings = 2;
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+    XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attachInfo));
+
+    LoopbackTrackingPeer peer(tcp);
+    oxr::protocol::TrackingPacket packet = {};
+    packet.headOrientation[3] = 1.0f;
+    // Haptics follow each hand's active interaction profiles, which come from its streamed controller.
+    packet.trackingFlags = oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE |
+                           oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE;
+    packet.leftControllerRot[3] = 1.0f;
+    packet.rightControllerRot[3] = 1.0f;
+
+    XrHapticActionInfo hapticActionInfo = {XR_TYPE_HAPTIC_ACTION_INFO};
+    hapticActionInfo.action = hapticAction;
+    hapticActionInfo.subactionPath = handPaths[1];
+    XrHapticVibration vibration = {XR_TYPE_HAPTIC_VIBRATION};
+    vibration.amplitude = 0.5f;
+    vibration.duration = 20'000'000;
+    vibration.frequency = 160.0f;
+
+    oxr::protocol::HapticsCommand command = {};
+    bool received = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!received && std::chrono::steady_clock::now() < deadline)
+    {
+        peer.SendTracking(packet, sizeof(packet));
+        PumpTrackingFrame(context.session);
+        const XrResult result = xrApplyHapticFeedback(context.session, &hapticActionInfo,
+                                                      reinterpret_cast<XrHapticBaseHeader*>(&vibration));
+        if (result == XR_SUCCESS)
+        {
+            received = peer.ReadHaptics(command, std::chrono::milliseconds(50));
+        }
+    }
+    REQUIRE(received);
+    CHECK(command.hand == 1);
+    CHECK_THAT(command.amplitude, WithinAbs(0.5f, 0.0001f));
+    CHECK_THAT(command.durationMs, WithinAbs(20.0f, 0.0001f));
+    CHECK_THAT(command.frequency, WithinAbs(160.0f, 0.0001f));
+
+    hapticActionInfo.subactionPath = XR_NULL_PATH;
+    XR_CHECK(xrStopHapticFeedback(context.session, &hapticActionInfo));
+    std::set<uint8_t> stoppedHands;
+    while (stoppedHands.size() < 2 && peer.ReadHaptics(command, std::chrono::seconds(2)))
+    {
+        if (command.amplitude == 0.0f)
+        {
+            stoppedHands.insert(command.hand);
+        }
+    }
+    CHECK(stoppedHands == std::set<uint8_t>{0, 1});
+}
+
+// Unreal Engine and OpenComposite create one vibration action per hand without subaction paths and pass
+// XR_NULL_PATH, so each call must reach the hand its action is bound to and no other.
+TEST_CASE("Haptic feedback reaches only the hands its action is bound to", "[runtime][actions][haptics][loopback]")
+{
+    const bool tcp = GENERATE(false, true);
+    CAPTURE(tcp);
+
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+    XrPath handPaths[2] = {context.Path("/user/hand/left"), context.Path("/user/hand/right")};
+
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrActionSetCreateInfo actionSetCreateInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(actionSetCreateInfo.actionSetName, "haptics", XR_MAX_ACTION_SET_NAME_SIZE);
+    std::strncpy(actionSetCreateInfo.localizedActionSetName, "Haptics", XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    XR_CHECK(xrCreateActionSet(context.instance, &actionSetCreateInfo, &actionSet));
+
+    auto createHapticAction = [&](const char* name, uint32_t countSubactionPaths) {
+        XrAction action = XR_NULL_HANDLE;
+        XrActionCreateInfo createInfo = {XR_TYPE_ACTION_CREATE_INFO};
+        createInfo.actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT;
+        createInfo.countSubactionPaths = countSubactionPaths;
+        createInfo.subactionPaths = handPaths;
+        std::strncpy(createInfo.actionName, name, XR_MAX_ACTION_NAME_SIZE);
+        std::strncpy(createInfo.localizedActionName, name, XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+        XR_CHECK(xrCreateAction(actionSet, &createInfo, &action));
+        return action;
+    };
+    const XrAction leftAction = createHapticAction("left_haptic", 0);
+    const XrAction rightAction = createHapticAction("right_haptic", 0);
+    // Declares both hands, but is bound only to the left one.
+    const XrAction leftBoundAction = createHapticAction("left_bound_haptic", 2);
+
+    XrActionSuggestedBinding bindings[] = {
+        {leftAction, context.Path("/user/hand/left/output/haptic")},
+        {rightAction, context.Path("/user/hand/right/output/haptic")},
+        {leftBoundAction, context.Path("/user/hand/left/output/haptic")},
+    };
+    XrInteractionProfileSuggestedBinding suggestedBindings = {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggestedBindings.interactionProfile = context.Path("/interaction_profiles/oculus/touch_controller");
+    suggestedBindings.suggestedBindings = bindings;
+    suggestedBindings.countSuggestedBindings = 3;
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
+    XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attachInfo));
+
+    LoopbackTrackingPeer peer(tcp);
+    oxr::protocol::TrackingPacket packet = {};
+    packet.headOrientation[3] = 1.0f;
+    packet.trackingFlags = oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE |
+                           oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE;
+    packet.leftControllerRot[3] = 1.0f;
+    packet.rightControllerRot[3] = 1.0f;
+
+    XrHapticActionInfo hapticActionInfo = {XR_TYPE_HAPTIC_ACTION_INFO};
+    hapticActionInfo.action = leftAction;
+    XrHapticVibration vibration = {XR_TYPE_HAPTIC_VIBRATION};
+    vibration.amplitude = 0.5f;
+    vibration.duration = 20'000'000;
+
+    oxr::protocol::HapticsCommand command = {};
+    bool received = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!received && std::chrono::steady_clock::now() < deadline)
+    {
+        peer.SendTracking(packet, sizeof(packet));
+        PumpTrackingFrame(context.session);
+        const XrResult result = xrApplyHapticFeedback(context.session, &hapticActionInfo,
+                                                      reinterpret_cast<XrHapticBaseHeader*>(&vibration));
+        if (result == XR_SUCCESS)
+        {
+            received = peer.ReadHaptics(command, std::chrono::milliseconds(50));
+        }
+    }
+    REQUIRE(received);
+    CHECK(command.hand == 0);
+
+    // The hands of the commands that arrive until the peer is quiet for 200 ms; command keeps the last one.
+    auto readHands = [&] {
+        std::vector<uint8_t> hands;
+        while (peer.ReadHaptics(command, std::chrono::milliseconds(200)))
+        {
+            hands.push_back(command.hand);
+        }
+        return hands;
+    };
+    // Applies repeated while waiting may still be in flight; all of them are for the left hand.
+    for (uint8_t hand : readHands())
+    {
+        CHECK(hand == 0);
+    }
+
+    hapticActionInfo.action = rightAction;
+    XR_CHECK(xrApplyHapticFeedback(context.session, &hapticActionInfo,
+                                   reinterpret_cast<XrHapticBaseHeader*>(&vibration)));
+    CHECK(readHands() == std::vector<uint8_t>{1});
+    XR_CHECK(xrStopHapticFeedback(context.session, &hapticActionInfo));
+    CHECK(readHands() == std::vector<uint8_t>{1});
+    CHECK(command.amplitude == 0.0f);
+    hapticActionInfo.action = leftAction;
+    XR_CHECK(xrStopHapticFeedback(context.session, &hapticActionInfo));
+    CHECK(readHands() == std::vector<uint8_t>{0});
+    CHECK(command.amplitude == 0.0f);
+
+    hapticActionInfo.action = leftBoundAction;
+    XR_CHECK(xrApplyHapticFeedback(context.session, &hapticActionInfo,
+                                   reinterpret_cast<XrHapticBaseHeader*>(&vibration)));
+    CHECK(readHands() == std::vector<uint8_t>{0});
+    hapticActionInfo.subactionPath = handPaths[1];
+    XR_CHECK(xrApplyHapticFeedback(context.session, &hapticActionInfo,
+                                   reinterpret_cast<XrHapticBaseHeader*>(&vibration)));
+    CHECK(readHands().empty());
+}
