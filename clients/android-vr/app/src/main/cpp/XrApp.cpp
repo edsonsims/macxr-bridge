@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "XrApp.h"
+#include "SpatialPermission.h"
 #include "UsbNetworkLink.h"
 
 #include <android/hardware_buffer.h>
@@ -1185,6 +1186,23 @@ bool XrApp::CreateInstance(struct android_app* app)
     {
         extensions.push_back(XR_BD_CONTROLLER_INTERACTION_EXTENSION_NAME);
     }
+    // Link para Mac: spatial features proxied to the macOS runtime (anchors, persistence, scene).
+    for (const char* spatialExtension : {XR_FB_SPATIAL_ENTITY_EXTENSION_NAME,
+                                         XR_FB_SPATIAL_ENTITY_STORAGE_EXTENSION_NAME,
+                                         XR_FB_SPATIAL_ENTITY_QUERY_EXTENSION_NAME,
+                                         XR_FB_SPATIAL_ENTITY_CONTAINER_EXTENSION_NAME,
+                                         XR_META_SPATIAL_ENTITY_PERSISTENCE_EXTENSION_NAME,
+                                         XR_META_SPATIAL_ENTITY_DISCOVERY_EXTENSION_NAME,
+                                         XR_FB_SCENE_EXTENSION_NAME,
+                                         XR_FB_SCENE_CAPTURE_EXTENSION_NAME,
+                                         XR_META_SPATIAL_ENTITY_MESH_EXTENSION_NAME})
+    {
+        if (hasExtension(spatialExtension))
+        {
+            extensions.push_back(spatialExtension);
+        }
+    }
+    enabledExtensionNames_ = extensions;
     LOGI("Enabled OpenXR extensions: %s", JoinExtensionNames(extensions).c_str());
 
     XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
@@ -1501,6 +1519,8 @@ bool XrApp::CreateSession()
     {
         LOGW("Passthrough unavailable on headset, shell will use the 3D fallback");
     }
+
+    spatialBridge_.Initialize(instance_, session_, appSpace_, enabledExtensionNames_);
 
     if (!InitializeDisplayRefreshRate(kPreferredDisplayRefreshRateHz))
     {
@@ -2495,11 +2515,13 @@ bool XrApp::OpenUsbSpatialSocket(uint16_t spatialPort)
     }
 
     LOGI("USB TCP spatial channel connected on port %u", spatialPort);
+    spatialBridge_.Start(spatialTcpSocket_, oxr::spatial_permission::IsSceneGranted());
     return true;
 }
 
 void XrApp::CloseSpatialSocket()
 {
+    spatialBridge_.Stop();
     if (spatialTcpSocket_ >= 0)
     {
         SendTcpRecord(spatialTcpSocket_, protocol::TcpRecordType::Disconnect, nullptr, 0);
@@ -2905,6 +2927,14 @@ void XrApp::SendClientConnect(const char* serverIp)
     {
         connect.clientCapabilities |= protocol::CLIENT_CAPABILITY_MIXED_REALITY_PASSTHROUGH |
             protocol::CLIENT_CAPABILITY_MIXED_REALITY_ALPHA;
+    }
+    if (spatialBridge_.GetFeatures() & protocol::spatial::FEATURE_ANCHORS)
+    {
+        connect.clientCapabilities |= protocol::CLIENT_CAPABILITY_SPATIAL_ENTITY;
+    }
+    if (spatialBridge_.GetFeatures() & protocol::spatial::FEATURE_SCENE_CAPTURE)
+    {
+        connect.clientCapabilities |= protocol::CLIENT_CAPABILITY_SCENE_CAPTURE;
     }
     connect.audioSampleRateHz = 48000;
     strncpy(connect.deviceName, headsetSystemName_, sizeof(connect.deviceName) - 1);
@@ -3832,6 +3862,7 @@ void XrApp::RunFrame()
             running_ = false;
             break;
         default:
+            spatialBridge_.OnEvent(event);
             break;
         }
         event = {XR_TYPE_EVENT_DATA_BUFFER};
@@ -3936,6 +3967,8 @@ void XrApp::RunFrame()
 
         protocol::TrackingPacket trackingPacket =
             BuildTrackingPacket(frameState.predictedDisplayTime);
+        spatialBridge_.SetFrameTime(frameState.predictedDisplayTime);
+        spatialBridge_.SendPosesIfDue();
 
         // Render to swapchains
         const bool renderedVideo = RenderFrame(frameState.predictedDisplayTime);
@@ -5651,6 +5684,7 @@ void XrApp::HandleSessionStateChange(XrSessionState newState)
 void XrApp::Shutdown()
 {
     StopNetworking();
+    spatialBridge_.Stop();
     ShutdownPassthrough();
     ShutdownHandTracking();
     ShutdownFoveation();

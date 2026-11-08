@@ -20,6 +20,8 @@ add_library(oxrsys_runtime SHARED
     src/InputManager.cpp
     src/HandTracker.cpp
     src/PassthroughFB.cpp
+    src/SpatialProxy.cpp
+    src/SpatialEntity.cpp
     src/StreamingServer.cpp
     src/PacketPacer.cpp
     src/TrackingReceiver.cpp

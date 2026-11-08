@@ -12,6 +12,9 @@
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM" />
     <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
+    <!-- Link para Mac: spatial anchors and Scene data are proxied to the macOS runtime -->
+    <uses-permission android:name="com.oculus.permission.USE_ANCHOR_API" />
+    <uses-permission android:name="com.oculus.permission.USE_SCENE" />
 
     <!-- OpenGL ES 3.1 required for Quest -->
     <uses-feature

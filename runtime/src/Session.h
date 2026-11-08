@@ -70,6 +70,8 @@ public:
     XrResult CreateReferenceSpace(const XrReferenceSpaceCreateInfo* createInfo, XrSpace* space);
     XrResult CreateActionSpace(XrAction action, XrPath subactionPath, const XrPosef& poseInSpace, XrSpace* space);
     XrResult DestroySpace(Space* space);
+    // Link para Mac: space backed by the headset's runtime (spatial anchor / scene entity).
+    Space* CreateRemoteSpace(uint64_t remoteId);
     XrResult GetStageBounds(XrExtent2Df* bounds);
     bool HasTrackingConnection() const;
     // hand: 0 = left, 1 = right. Amplitude 0 stops the hand's vibration.

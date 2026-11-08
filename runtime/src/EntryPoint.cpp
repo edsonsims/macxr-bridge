@@ -18,6 +18,7 @@
 #include "InputManager.h"
 #include "HandTracker.h"
 #include "PassthroughFB.h"
+#include "SpatialEntity.h"
 #include "Config.h"
 #include "RuntimeStatus.h"
 #include "TimespecConversion.h"
@@ -289,6 +290,11 @@ static std::vector<ExtensionInfo> GetSupportedExtensionInfos()
         {XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME, XR_META_touch_controller_plus_SPEC_VERSION},
 #endif
     };
+    // Link para Mac: anchors, persistence and Scene are proxied to the headset (SpatialEntity.cpp).
+    for (const auto& [name, version] : oxrsys::spatial_entity::Extensions())
+    {
+        extensions.push_back({name, version});
+    }
 #ifdef XR_USE_GRAPHICS_API_VULKAN
     extensions.push_back({XR_KHR_VULKAN_ENABLE_EXTENSION_NAME, XR_KHR_vulkan_enable_SPEC_VERSION});
     extensions.push_back({XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME, XR_KHR_vulkan_enable2_SPEC_VERSION});
@@ -327,6 +333,10 @@ static const char* ExtensionForFunctionName(const char* functionName)
     if (functionName == nullptr)
     {
         return nullptr;
+    }
+    if (const char* spatialExtension = oxrsys::spatial_entity::ExtensionForFunction(functionName))
+    {
+        return spatialExtension;
     }
 
     if (std::strcmp(functionName, "xrCreateHandTrackerEXT") == 0 ||
@@ -782,6 +792,8 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrPollEvent(
     {
         return XR_ERROR_HANDLE_INVALID;
     }
+    // Link para Mac: convert the headset's spatial completion events on the app thread.
+    oxrsys::spatial_entity::DrainEvents(inst, gSession.get());
     const XrResult r = inst->PollEvent(eventData);
     if (r == XR_SUCCESS && eventData != nullptr)
     {
@@ -4128,6 +4140,12 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetInstanceProcAddr(
     {
         spdlog::debug("OXRSys: xrGetInstanceProcAddr('{}') not enabled for this instance", name);
         return XR_ERROR_FUNCTION_UNSUPPORTED;
+    }
+
+    // Link para Mac: spatial entity / scene functions proxied to the headset
+    if (oxrsys::spatial_entity::GetProcAddr(name, function))
+    {
+        return *function != nullptr ? XR_SUCCESS : XR_ERROR_FUNCTION_UNSUPPORTED;
     }
 
     // Global functions

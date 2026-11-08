@@ -48,6 +48,11 @@ public class NativeActivity extends android.app.NativeActivity
     }
 
     private static native void nativeSetUsbNetwork(long networkHandle);
+    private static native void nativeSetScenePermission(boolean granted);
+
+    // Link para Mac: Scene (room) data for the macOS runtime needs this runtime permission.
+    private static final String SCENE_PERMISSION = "com.oculus.permission.USE_SCENE";
+    private static final int SCENE_PERMISSION_REQUEST = 0x5C3E;
 
     /**
      * Reports the USB network (CDC-NCM) link's Ethernet network to the native client, which binds
@@ -120,6 +125,44 @@ public class NativeActivity extends android.app.NativeActivity
         registerUsbNetworkCallback();
         super.onCreate(savedInstanceState);
         probeUsbPermissionTargets(getIntent());
+        requestScenePermission();
+    }
+
+    private void requestScenePermission()
+    {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M)
+        {
+            nativeSetScenePermission(true);
+            return;
+        }
+        if (checkSelfPermission(SCENE_PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED)
+        {
+            Log.i(TAG, "Scene permission already granted");
+            nativeSetScenePermission(true);
+            return;
+        }
+        Log.i(TAG, "Requesting scene permission");
+        requestPermissions(new String[] {SCENE_PERMISSION}, SCENE_PERMISSION_REQUEST);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults)
+    {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != SCENE_PERMISSION_REQUEST)
+        {
+            return;
+        }
+        boolean granted = false;
+        for (int i = 0; i < permissions.length; ++i)
+        {
+            if (SCENE_PERMISSION.equals(permissions[i]))
+            {
+                granted = grantResults[i] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            }
+        }
+        Log.i(TAG, "Scene permission " + (granted ? "granted" : "denied"));
+        nativeSetScenePermission(granted);
     }
 
     @Override

@@ -91,6 +91,12 @@ XrResult Instance::GetSystemProperties(XrSystemId systemId, XrSystemProperties* 
                 : 0;
         }
 #endif
+        else if (next->type == XR_TYPE_SYSTEM_SPATIAL_ENTITY_PROPERTIES_FB)
+        {
+            // Link para Mac: anchors are proxied to the headset (SpatialEntity.cpp).
+            auto* props = reinterpret_cast<XrSystemSpatialEntityPropertiesFB*>(next);
+            props->supportsSpatialEntity = IsExtensionEnabled(XR_FB_SPATIAL_ENTITY_EXTENSION_NAME) ? XR_TRUE : XR_FALSE;
+        }
 #ifdef XR_META_headset_id
         else if (next->type == XR_TYPE_SYSTEM_HEADSET_ID_PROPERTIES_META &&
                  IsExtensionEnabled(XR_META_HEADSET_ID_EXTENSION_NAME))

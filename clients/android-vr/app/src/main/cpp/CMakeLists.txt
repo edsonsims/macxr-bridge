@@ -66,6 +66,8 @@ add_library(oxrsys_android SHARED
     NetworkReceiver.cpp
     TrackingSender.cpp
     UsbNetworkLink.cpp
+    SpatialBridge.cpp
+    SpatialPermission.cpp
 )
 
 target_include_directories(oxrsys_android PRIVATE

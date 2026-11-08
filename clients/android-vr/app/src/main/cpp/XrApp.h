@@ -21,6 +21,7 @@
 #include "NetworkReceiver.h"
 #include "QuestPassthroughAlphaPolicy.h"
 #include "QuestShellInteraction.h"
+#include "SpatialBridge.h"
 #include "TrackingSender.h"
 #include "VideoDecoder.h"
 
@@ -341,6 +342,10 @@ private:
     std::mutex pendingHapticsMutex_;
     std::array<protocol::HapticsCommand, 2> pendingHaptics_ = {};
     std::array<bool, 2> hasPendingHaptics_ = {};
+
+    // Link para Mac: anchors/scene proxy served to the runtime over the spatial channel.
+    SpatialBridge spatialBridge_;
+    std::vector<const char*> enabledExtensionNames_;
 
     // Link para Mac: the OpenXR app's XR_FB_passthrough intent relayed by the runtime. While the app
     // controls passthrough, it overrides the server's passthrough_enabled setting for the streamed frame.

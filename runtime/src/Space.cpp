@@ -6,6 +6,7 @@
 #include "Runtime.h"
 #include "InputManager.h"
 #include "ActionSet.h"
+#include "SpatialProxy.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
@@ -18,6 +19,14 @@ Space::Space(Session* session, Type type, XrReferenceSpaceType refType, const Xr
 Space::Space(Session* session, XrAction action, XrPath subactionPath, const XrPosef& poseInSpace)
     : session_(session), type_(Type::Action), poseInSpace_(poseInSpace), action_(action), subactionPath_(subactionPath)
 {
+    Runtime::Get().RegisterHandle(handle_, this);
+}
+
+Space::Space(Session* session, uint64_t remoteId)
+    : session_(session), type_(Type::Remote), remoteId_(remoteId)
+{
+    poseInSpace_.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+    poseInSpace_.position = {0.0f, 0.0f, 0.0f};
     Runtime::Get().RegisterHandle(handle_, this);
 }
 
@@ -127,6 +136,19 @@ static LocatedWorldPose GetWorldPose(const Space* space, const InputManager& inp
                 break;
             default:
                 break;
+        }
+    }
+    else if (space->GetType() == Space::Type::Remote)
+    {
+        // Pose streamed by the headset in its STAGE space, which the runtime treats as world.
+        XrSpaceLocationFlags flags = 0;
+        if (!SpatialProxy::Get().GetSpacePose(space->GetRemoteId(), &result.pose, &flags) ||
+            (flags & XR_SPACE_LOCATION_POSITION_VALID_BIT) == 0 ||
+            (flags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) == 0)
+        {
+            result.active = false;
+            result.pose.orientation = {0, 0, 0, 1};
+            result.pose.position = {0, 0, 0};
         }
     }
     else if (space->GetType() == Space::Type::Action)
@@ -255,6 +277,20 @@ XrResult Space::LocateSpace(Space* baseSpace, XrTime time, XrSpaceLocation* loca
     LocateRelativePose(thisPose, basePose, location);
 
     return XR_SUCCESS;
+}
+
+bool Space::ToWorldPose(const XrPosef& poseInSpace, XrPosef* worldPose) const
+{
+    LocatedWorldPose base = GetWorldPose(this, session_->GetInputManager());
+    if (!base.active)
+    {
+        return false;
+    }
+    glm::quat baseRot = ToGlm(base.pose.orientation);
+    glm::vec3 basePos = ToGlm(base.pose.position);
+    worldPose->orientation = ToXr(glm::normalize(baseRot * ToGlm(poseInSpace.orientation)));
+    worldPose->position = ToXr(basePos + baseRot * ToGlm(poseInSpace.position));
+    return true;
 }
 
 XrSpaceLocation Space::LocateWorldPose(const XrPosef& pose) const

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "StreamingServer.h"
+#include "SpatialProxy.h"
 #include "ClientLiveness.h"
 #include "Config.h"
 #include "RuntimePlatform.h"
@@ -1337,6 +1338,15 @@ void StreamingServer::TcpSpatialThread()
         }
 
         spdlog::info("StreamingServer: USB ADB spatial client connected");
+        // Link para Mac: the spatial channel carries the anchors/scene proxy (SpatialProxy).
+        SpatialProxy::Get().AttachTransport([this, clientSocket](const void* data, size_t size) {
+            std::lock_guard<std::mutex> lock(tcpSocketMutex_);
+            if (tcpSpatialClientSocket_ != clientSocket)
+            {
+                return false;
+            }
+            return SendTcpRecord(clientSocket, oxr::protocol::TcpRecordType::Spatial, data, size);
+        });
         while (running_.load())
         {
             oxr::protocol::TcpRecordHeader header = {};
@@ -1353,9 +1363,9 @@ void StreamingServer::TcpSpatialThread()
             {
                 continue;
             }
-            // Spatial payloads are reserved for anchors/scene data. Keep this
-            // channel alive independently from video/tracking until a backend is attached.
+            SpatialProxy::Get().OnMessage(payload.data(), payload.size());
         }
+        SpatialProxy::Get().DetachTransport();
 
         bool shouldClose = true;
         {

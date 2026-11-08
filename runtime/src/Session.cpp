@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "Session.h"
+#include "SpatialEntity.h"
 #include "CompositionLayerAlpha.h"
 #include "CompositionOverlay.h"
 #include "Config.h"
@@ -190,6 +191,7 @@ Session::~Session()
         // Freeing it here would invalidate callbacks and app-device resources.
         std::terminate();
     }
+    oxrsys::spatial_entity::OnSessionDestroyed();
     instance_->RemoveEventsForSession(reinterpret_cast<XrSession>(handle_));
     instance_->SetSession(nullptr);
     Runtime::Get().RemoveHandle(handle_);
@@ -1573,11 +1575,18 @@ XrResult Session::DestroySpace(Space* space)
         if (it->get() == space)
         {
             spdlog::debug("Session: game destroyed space handle {:#x} (total spaces now {})", space->GetHandle(), spaces_.size() - 1);
+            oxrsys::spatial_entity::OnSpaceDestroyed(space);
             spaces_.erase(it);
             return XR_SUCCESS;
         }
     }
     return XR_ERROR_HANDLE_INVALID;
+}
+
+Space* Session::CreateRemoteSpace(uint64_t remoteId)
+{
+    spaces_.push_back(std::make_unique<Space>(this, remoteId));
+    return spaces_.back().get();
 }
 
 void Session::StartStreamingIfNeeded()
