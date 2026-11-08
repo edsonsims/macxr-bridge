@@ -382,6 +382,25 @@ void InputManager::UpdateFromStreaming()
                 sourceJoints[jointIndex][2],
                 sourceJoints[jointIndex][3]);
         }
+        const bool hasRotations =
+            (packet.trackingFlags & oxr::protocol::TRACKING_FLAG_HAND_JOINT_ROTATIONS_VALID) != 0;
+        streamingHands_[handIndex].hasRotations = hasRotations;
+        if (hasRotations)
+        {
+            const auto& sourceRotations =
+                handIndex == 0 ? packet.leftHandJointRotations : packet.rightHandJointRotations;
+            for (size_t jointIndex = 0; jointIndex < oxr::protocol::HAND_JOINT_COUNT; ++jointIndex)
+            {
+                constexpr float kScale = 1.0f / 32767.0f;
+                glm::quat q(sourceRotations[jointIndex][3] * kScale,   // w
+                            sourceRotations[jointIndex][0] * kScale,   // x
+                            sourceRotations[jointIndex][1] * kScale,   // y
+                            sourceRotations[jointIndex][2] * kScale);  // z
+                const float len = glm::length(q);
+                streamingHands_[handIndex].rotations[jointIndex] =
+                    len > 1e-4f ? q / len : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            }
+        }
     }
 
     // Debug: log streaming pose periodically
@@ -506,6 +525,14 @@ XrPosef InputManager::GetReferenceSpacePose(XrReferenceSpaceType referenceSpaceT
                 pose.orientation = {localReferenceYaw_.x, localReferenceYaw_.y,
                                     localReferenceYaw_.z, localReferenceYaw_.w};
             }
+            else
+            {
+                // Link para Mac: before the first streamed head pose, LOCAL still sits at eye level
+                // (the default head position), never on the floor. Unity's OpenXR plugin treats a
+                // LOCAL_FLOOR that coincides with LOCAL as "floor unknown" and re-creates the Floor
+                // app space every frame, which breaks xrEndFrame for OVRPlugin.
+                pose.position = {headPosition_.x, headPosition_.y, headPosition_.z};
+            }
             break;
 
         case XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR:
@@ -515,6 +542,10 @@ XrPosef InputManager::GetReferenceSpacePose(XrReferenceSpaceType referenceSpaceT
                 pose.position = {localReferencePosition_.x, floorOriginY, localReferencePosition_.z};
                 pose.orientation = {localReferenceYaw_.x, localReferenceYaw_.y,
                                     localReferenceYaw_.z, localReferenceYaw_.w};
+            }
+            else
+            {
+                pose.position = {headPosition_.x, floorOriginY, headPosition_.z};
             }
             break;
 
@@ -1363,7 +1394,9 @@ void InputManager::GetHandJointLocations(Hand hand, XrHandJointLocationEXT* join
         {
             const glm::vec4& joint = handState.joints[i];
             joints[i].locationFlags = validFlags;
-            joints[i].pose = MakePose(glm::vec3(joint.x, joint.y, joint.z), orientation);
+            // Link para Mac: real per-joint orientation from the headset when the client sends it.
+            joints[i].pose = MakePose(glm::vec3(joint.x, joint.y, joint.z),
+                                      handState.hasRotations ? handState.rotations[i] : orientation);
             joints[i].radius = joint.w;
         }
         return;

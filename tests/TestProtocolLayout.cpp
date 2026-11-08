@@ -51,8 +51,11 @@ TEST_CASE("C++ protocol layouts match the documented wire format", "[protocol]")
     STATIC_REQUIRE(SERVER_FEATURE_STREAM_RECONFIGURE == 0x00000010);
     STATIC_REQUIRE(CLIENT_CAPABILITY_STREAM_RECONFIGURE == 0x00000010);
 
-    // controllerProfile and touchState end at 1176, already a multiple of the struct's int64 alignment.
-    STATIC_REQUIRE(sizeof(TrackingPacket) == 1176);
+    // controllerProfile and touchState end at 1176; Link para Mac appends the per-joint hand rotations
+    // (2 hands x 26 joints x 4 x int16 = 416 bytes) -> 1592, still a multiple of the int64 alignment.
+    STATIC_REQUIRE(offsetof(TrackingPacket, leftHandJointRotations) == 1176);
+    STATIC_REQUIRE(offsetof(TrackingPacket, rightHandJointRotations) == 1384);
+    STATIC_REQUIRE(sizeof(TrackingPacket) == 1592);
     STATIC_REQUIRE(TRACKING_PACKET_BASE_SIZE == 1008);
     STATIC_REQUIRE(offsetof(TrackingPacket, headLinearVelocity) == 152);
     STATIC_REQUIRE(offsetof(TrackingPacket, headAngularVelocity) == 164);

@@ -33,6 +33,8 @@ public:
     {
         bool active = false;
         std::array<glm::vec4, oxr::protocol::HAND_JOINT_COUNT> joints = {};
+        bool hasRotations = false;  // per-joint orientations arrived (TRACKING_FLAG_HAND_JOINT_ROTATIONS_VALID)
+        std::array<glm::quat, oxr::protocol::HAND_JOINT_COUNT> rotations = {};
     };
 
     InputManager();

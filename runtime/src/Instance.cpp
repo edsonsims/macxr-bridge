@@ -58,7 +58,9 @@ XrResult Instance::GetSystemProperties(XrSystemId systemId, XrSystemProperties* 
     properties->type = XR_TYPE_SYSTEM_PROPERTIES;
     properties->systemId = 1;
     properties->vendorId = 0;
-    std::strncpy(properties->systemName, "OXRSys Runtime", XR_MAX_SYSTEM_NAME_SIZE);
+    // Link para Mac: OVRPlugin (Meta XR SDK) refuses runtimes whose name lacks "Meta"/"Oculus"
+    // ("Non-Oculus OpenXR runtime is not supported") and reads the system name to pick the headset model.
+    std::strncpy(properties->systemName, "Meta Quest 3", XR_MAX_SYSTEM_NAME_SIZE);
     properties->graphicsProperties.maxSwapchainImageWidth = 4096;
     properties->graphicsProperties.maxSwapchainImageHeight = 4096;
     properties->graphicsProperties.maxLayerCount = 16;
@@ -75,6 +77,17 @@ XrResult Instance::GetSystemProperties(XrSystemId systemId, XrSystemProperties* 
             handTrackingProps->supportsHandTracking =
                 IsExtensionEnabled(XR_EXT_HAND_TRACKING_EXTENSION_NAME) ? XR_TRUE : XR_FALSE;
         }
+#ifdef XR_META_headset_id
+        else if (next->type == XR_TYPE_SYSTEM_HEADSET_ID_PROPERTIES_META &&
+                 IsExtensionEnabled(XR_META_HEADSET_ID_EXTENSION_NAME))
+        {
+            // Stable, runtime-specific UUID ("OXRSys headset" v1); real per-device ids can come from the client later.
+            static const uint8_t kHeadsetId[XR_UUID_SIZE] = {0x6f, 0x78, 0x72, 0x73, 0x79, 0x73, 0x00, 0x01,
+                                                             0x4c, 0x69, 0x6e, 0x6b, 0x4d, 0x61, 0x63, 0x01};
+            auto* headsetId = reinterpret_cast<XrSystemHeadsetIdPropertiesMETA*>(next);
+            std::memcpy(headsetId->id.data, kHeadsetId, XR_UUID_SIZE);
+        }
+#endif
         next = next->next;
     }
 
@@ -91,7 +104,7 @@ XrResult Instance::GetInstanceProperties(XrInstanceProperties* properties)
     properties->type = XR_TYPE_INSTANCE_PROPERTIES;
     properties->runtimeVersion =
         XR_MAKE_VERSION(OXRSYS_VERSION_MAJOR, OXRSYS_VERSION_MINOR, OXRSYS_VERSION_PATCH);
-    std::strncpy(properties->runtimeName, "OXRSys Runtime", XR_MAX_RUNTIME_NAME_SIZE);
+    std::strncpy(properties->runtimeName, "OXRSys Runtime for Meta Quest", XR_MAX_RUNTIME_NAME_SIZE);
 
     return XR_SUCCESS;
 }
@@ -288,6 +301,12 @@ bool Instance::IsExtensionEnabled(const char* extensionName) const
 
 bool Instance::SupportsLocalFloor() const
 {
+#ifdef XR_EXT_local_floor
+    if (IsExtensionEnabled(XR_EXT_LOCAL_FLOOR_EXTENSION_NAME))
+    {
+        return true;
+    }
+#endif
     return apiVersion_ >= XR_MAKE_VERSION(1, 1, 0);
 }
 

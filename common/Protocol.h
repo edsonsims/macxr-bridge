@@ -366,6 +366,13 @@ struct TrackingPacket
     // Capacitive touch, one bit per input in the ButtonFlags layout (a set BUTTON_A bit = A is touched).
     // Valid only with a known controllerProfile.
     uint32_t touchState;
+
+    // Link para Mac: per-joint hand orientations (OpenXR XR_EXT_hand_tracking convention), quaternion
+    // x, y, z, w quantized to int16 (value * 32767). Without them every joint shared one orientation and
+    // skinned hands (Meta Interaction SDK, OVRHand) rendered with twisted fingers. Appended last so older
+    // clients stay compatible; valid only with TRACKING_FLAG_HAND_JOINT_ROTATIONS_VALID.
+    int16_t leftHandJointRotations[HAND_JOINT_COUNT][4];
+    int16_t rightHandJointRotations[HAND_JOINT_COUNT][4];
 };
 
 enum ControllerProfile : uint32_t
@@ -424,6 +431,7 @@ enum TrackingFlags : uint32_t
     TRACKING_FLAG_LEFT_CONTROLLER_AIM_ANGULAR_VELOCITY_VALID = 0x1000,
     TRACKING_FLAG_RIGHT_CONTROLLER_AIM_LINEAR_VELOCITY_VALID = 0x2000,
     TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ANGULAR_VELOCITY_VALID = 0x4000,
+    TRACKING_FLAG_HAND_JOINT_ROTATIONS_VALID = 0x8000,  // leftHandJointRotations / rightHandJointRotations carry data
 };
 
 // ─── Control Channel (bidirectional, UDP on CONTROL_PORT) ───────────────────

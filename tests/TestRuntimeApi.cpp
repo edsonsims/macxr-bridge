@@ -642,7 +642,8 @@ TEST_CASE("Loader-backed runtime reports configured product version", "[runtime]
     XR_CHECK(xrGetInstanceProperties(instance, &properties));
     CHECK(properties.runtimeVersion ==
           XR_MAKE_VERSION(OXRSYS_VERSION_MAJOR, OXRSYS_VERSION_MINOR, OXRSYS_VERSION_PATCH));
-    CHECK(std::string(properties.runtimeName) == "OXRSys Runtime");
+    // Link para Mac: OVRPlugin only accepts runtimes whose name mentions Meta/Oculus.
+    CHECK(std::string(properties.runtimeName) == "OXRSys Runtime for Meta Quest");
 
     xrDestroyInstance(instance);
 }
@@ -1092,8 +1093,11 @@ TEST_CASE("Runtime enumerates and creates LOCAL_FLOOR reference spaces", "[runti
     XR_CHECK(xrLocateSpace(localFloorSpace, context.localSpace, sampleTime, &location));
     CHECK((location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0);
     CHECK((location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0);
+    // Link para Mac: before the first streamed head pose LOCAL sits at the default eye height (1.6 m),
+    // so LOCAL_FLOOR is 1.6 m below it (a LOCAL_FLOOR equal to LOCAL makes Unity re-create the Floor
+    // app space every frame).
     CHECK_THAT(location.pose.position.x, WithinAbs(0.0f, 0.001f));
-    CHECK_THAT(location.pose.position.y, WithinAbs(0.0f, 0.001f));
+    CHECK_THAT(location.pose.position.y, WithinAbs(-1.6f, 0.001f));
     CHECK_THAT(location.pose.position.z, WithinAbs(0.0f, 0.001f));
 
     XR_CHECK(xrDestroySpace(localFloorSpace));
@@ -1288,10 +1292,11 @@ TEST_CASE("Loopback tracking reaches OpenXR velocities and STAGE bounds", "[runt
     XR_CHECK(xrCreateReferenceSpace(context.session, &createInfo, &stageSpace));
 
     XrExtent2Df bounds = {123.0f, 456.0f};
+    // Link para Mac: a default 3 m x 3 m play area is reported until the headset sends its guardian.
     CHECK(xrGetReferenceSpaceBoundsRect(context.session, XR_REFERENCE_SPACE_TYPE_STAGE, &bounds) ==
-          XR_SPACE_BOUNDS_UNAVAILABLE);
-    CHECK(bounds.width == 0.0f);
-    CHECK(bounds.height == 0.0f);
+          XR_SUCCESS);
+    CHECK(bounds.width == 3.0f);
+    CHECK(bounds.height == 3.0f);
     XrSpaceVelocity velocity = {XR_TYPE_SPACE_VELOCITY};
     XrSpaceLocation location = {XR_TYPE_SPACE_LOCATION, &velocity};
     XR_CHECK(xrLocateSpace(viewSpace, stageSpace, 1, &location));
@@ -1397,7 +1402,8 @@ TEST_CASE("Loopback tracking reaches OpenXR velocities and STAGE bounds", "[runt
 
     packet.trackingFlags &= ~oxr::protocol::TRACKING_FLAG_STAGE_BOUNDS_VALID;
     REQUIRE(waitForPacket(sizeof(packet), [&] {
-        return boundsResult == XR_SPACE_BOUNDS_UNAVAILABLE && bounds.width == 0.0f && bounds.height == 0.0f;
+        // Link para Mac: back to the default 3 m x 3 m play area (reported as XR_SUCCESS).
+        return boundsResult == XR_SUCCESS && bounds.width == 3.0f && bounds.height == 3.0f;
     }));
     CHECK(CountStageChanges(context) == 1);
 
@@ -1410,10 +1416,10 @@ TEST_CASE("Loopback tracking reaches OpenXR velocities and STAGE bounds", "[runt
         REQUIRE(waitForPacket(size, [&] {
             return velocity.velocityFlags == validVelocity &&
                    velocity.linearVelocity.x == packet.headLinearVelocity[0] &&
-                   boundsResult == XR_SPACE_BOUNDS_UNAVAILABLE;
+                   boundsResult == XR_SUCCESS && bounds.width == 3.0f;  // Link para Mac: default play area
         }));
-        CHECK(bounds.width == 0.0f);
-        CHECK(bounds.height == 0.0f);
+        CHECK(bounds.width == 3.0f);
+        CHECK(bounds.height == 3.0f);
         CHECK(CountStageChanges(context) == 0);
     }
 
@@ -1427,11 +1433,12 @@ TEST_CASE("Loopback tracking reaches OpenXR velocities and STAGE bounds", "[runt
         boundsResult = xrGetReferenceSpaceBoundsRect(context.session, XR_REFERENCE_SPACE_TYPE_STAGE, &bounds);
         XR_CHECK(xrLocateSpace(viewSpace, stageSpace, sampleTime, &location));
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    } while ((boundsResult != XR_SPACE_BOUNDS_UNAVAILABLE || velocity.velocityFlags != 0) &&
+    } while ((bounds.width != 3.0f || velocity.velocityFlags != 0) &&
              std::chrono::steady_clock::now() < deadline);
-    CHECK(boundsResult == XR_SPACE_BOUNDS_UNAVAILABLE);
-    CHECK(bounds.width == 0.0f);
-    CHECK(bounds.height == 0.0f);
+    // Link para Mac: with the client gone the default 3 m x 3 m play area is reported again.
+    CHECK(boundsResult == XR_SUCCESS);
+    CHECK(bounds.width == 3.0f);
+    CHECK(bounds.height == 3.0f);
     CHECK(velocity.velocityFlags == 0);
     CHECK(CountStageChanges(context) == 1);
 
@@ -1444,7 +1451,8 @@ TEST_CASE("Loopback tracking reaches OpenXR velocities and STAGE bounds", "[runt
             XR_CHECK(xrLocateSpace(viewSpace, stageSpace, sampleTime, &location));
             CHECK(velocity.velocityFlags == 0);
             CHECK(xrGetReferenceSpaceBoundsRect(context.session, XR_REFERENCE_SPACE_TYPE_STAGE, &bounds) ==
-                  XR_SPACE_BOUNDS_UNAVAILABLE);
+                  XR_SUCCESS);  // Link para Mac: default play area while no client is admitted
+            CHECK(bounds.width == 3.0f);
         }
         CHECK(CountStageChanges(context) == 0);
     }
@@ -3002,7 +3010,7 @@ TEST_CASE("Hand interaction pose and value inputs work through automation", "[ru
     XR_CHECK(xrLocateSpace(pinchActionSpace, context.localSpace, sampleTime, &spaceLocation));
     CHECK((spaceLocation.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0);
     CHECK_THAT(spaceLocation.pose.position.x, WithinAbs(0.15f, 0.001f));
-    CHECK_THAT(spaceLocation.pose.position.y, WithinAbs(1.25f, 0.001f));
+    CHECK_THAT(spaceLocation.pose.position.y, WithinAbs(1.25f - 1.6f, 0.001f));  // LOCAL at eye level
     CHECK_THAT(spaceLocation.pose.position.z, WithinAbs(-0.35f, 0.001f));
 
     std::array<XrSpace, 1> spaces = {pinchActionSpace};
@@ -3028,7 +3036,7 @@ TEST_CASE("Hand interaction pose and value inputs work through automation", "[ru
     REQUIRE(velocities.velocityCount == 1);
     CHECK((locationData[0].locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0);
     CHECK_THAT(locationData[0].pose.position.x, WithinAbs(0.15f, 0.001f));
-    CHECK_THAT(locationData[0].pose.position.y, WithinAbs(1.25f, 0.001f));
+    CHECK_THAT(locationData[0].pose.position.y, WithinAbs(1.25f - 1.6f, 0.001f));  // LOCAL at eye level
     CHECK_THAT(locationData[0].pose.position.z, WithinAbs(-0.35f, 0.001f));
     XrSpaceVelocity velocity = {XR_TYPE_SPACE_VELOCITY};
     spaceLocation.next = &velocity;
@@ -3860,6 +3868,14 @@ TEST_CASE("Reference space bounds remain unavailable without boundary data", "[r
     {
         CAPTURE(space);
         XrExtent2Df bounds = {123.0f, 456.0f};
+        if (space == XR_REFERENCE_SPACE_TYPE_STAGE)
+        {
+            // Link para Mac: default 3 m x 3 m play area until the headset reports its guardian.
+            CHECK(xrGetReferenceSpaceBoundsRect(context.session, space, &bounds) == XR_SUCCESS);
+            CHECK(bounds.width == 3.0f);
+            CHECK(bounds.height == 3.0f);
+            continue;
+        }
         CHECK(xrGetReferenceSpaceBoundsRect(context.session, space, &bounds) ==
               XR_SPACE_BOUNDS_UNAVAILABLE);
         CHECK(bounds.width == 0.0f);

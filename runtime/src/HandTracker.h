@@ -29,6 +29,7 @@ public:
     }
 
     XrResult LocateHandJoints(XrSpace baseSpace, XrTime time, XrHandJointLocationsEXT* locations);
+    XrHandTrackingAimStateFB* FillMetaHandExtensions(XrHandJointLocationsEXT* locations, const XrPosef& headPose, bool rightHand);
 
 private:
     uint64_t handle_ = 0;

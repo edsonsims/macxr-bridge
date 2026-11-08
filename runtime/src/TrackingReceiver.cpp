@@ -305,6 +305,8 @@ void TrackingReceiver::StorePayload(const uint8_t* data, size_t size, const uint
          offsetof(TrackingPacket, rightControllerAimLinearVelocity) + sizeof(packet.rightControllerAimLinearVelocity)},
         {TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ANGULAR_VELOCITY_VALID,
          offsetof(TrackingPacket, rightControllerAimAngularVelocity) + sizeof(packet.rightControllerAimAngularVelocity)},
+        {TRACKING_FLAG_HAND_JOINT_ROTATIONS_VALID,
+         offsetof(TrackingPacket, rightHandJointRotations) + sizeof(packet.rightHandJointRotations)},
     };
     for (const auto& field : fields)
     {

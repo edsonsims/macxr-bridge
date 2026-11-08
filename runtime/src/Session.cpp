@@ -872,6 +872,8 @@ XrResult Session::ValidateSwapchainSubImage(const XrSwapchainSubImage& subImage)
     auto* swapchain = Runtime::Get().FromHandle<Swapchain>(reinterpret_cast<uint64_t>(subImage.swapchain));
     if (swapchain == nullptr || !OwnsSwapchain(swapchain))
     {
+        spdlog::warn("OXRSys: EndFrame layer references unknown swapchain handle {:#x} (known={}, owned={})",
+                     reinterpret_cast<uint64_t>(subImage.swapchain), swapchain != nullptr, swapchain != nullptr && OwnsSwapchain(swapchain));
         return XR_ERROR_HANDLE_INVALID;
     }
     if (!swapchain->HasReleasedImage())
@@ -910,6 +912,9 @@ XrResult Session::ValidateProjectionLayer(const XrCompositionLayerProjection& la
     auto* space = Runtime::Get().FromHandle<Space>(reinterpret_cast<uint64_t>(layer.space));
     if (space == nullptr || space->GetSession() != this)
     {
+        spdlog::warn("OXRSys: EndFrame layer type {} references space handle {:#x} (known={}, sameSession={})",
+                     static_cast<int>(layer.type), reinterpret_cast<uint64_t>(layer.space), space != nullptr,
+                     space != nullptr && space->GetSession() == this);
         return XR_ERROR_HANDLE_INVALID;
     }
     if (layer.viewCount != 2 || layer.views == nullptr)
@@ -965,6 +970,9 @@ XrResult Session::ValidateQuadLayer(const XrCompositionLayerQuad& layer) const
     auto* space = Runtime::Get().FromHandle<Space>(reinterpret_cast<uint64_t>(layer.space));
     if (space == nullptr || space->GetSession() != this)
     {
+        spdlog::warn("OXRSys: EndFrame layer type {} references space handle {:#x} (known={}, sameSession={})",
+                     static_cast<int>(layer.type), reinterpret_cast<uint64_t>(layer.space), space != nullptr,
+                     space != nullptr && space->GetSession() == this);
         return XR_ERROR_HANDLE_INVALID;
     }
     if (!IsValidPose(layer.pose))
@@ -985,6 +993,9 @@ XrResult Session::ValidateCylinderLayer(const XrCompositionLayerCylinderKHR& lay
     auto* space = Runtime::Get().FromHandle<Space>(reinterpret_cast<uint64_t>(layer.space));
     if (space == nullptr || space->GetSession() != this)
     {
+        spdlog::warn("OXRSys: EndFrame layer type {} references space handle {:#x} (known={}, sameSession={})",
+                     static_cast<int>(layer.type), reinterpret_cast<uint64_t>(layer.space), space != nullptr,
+                     space != nullptr && space->GetSession() == this);
         return XR_ERROR_HANDLE_INVALID;
     }
     if (!IsValidPose(layer.pose))
@@ -1387,6 +1398,7 @@ XrResult Session::GetStageBounds(XrExtent2Df* bounds)
     std::lock_guard<std::mutex> lock(stageBoundsMutex_);
     *bounds = {};
     const bool available = HasTrackingConnection() && inputManager_->GetStageBounds(*bounds);
+    spdlog::debug("Session: xrGetReferenceSpaceBoundsRect(STAGE) -> available={} {}x{}", available, bounds->width, bounds->height);
     if (available != stageBoundsAvailable_ || bounds->width != stageBounds_.width ||
         bounds->height != stageBounds_.height)
     {
@@ -1402,7 +1414,16 @@ XrResult Session::GetStageBounds(XrExtent2Df* bounds)
         stageBounds_ = *bounds;
         stageBoundsAvailable_ = available;
     }
-    return available ? XR_SUCCESS : XR_SPACE_BOUNDS_UNAVAILABLE;
+    if (!available)
+    {
+        // Link para Mac: Unity's OpenXR plugin + OVRPlugin recreate the app space every frame while STAGE bounds
+        // are "unavailable" (and then submit the previous, destroyed space to xrEndFrame). Until the headset
+        // reports its guardian, answer with a default 3 m x 3 m play area like a freshly set-up headset does.
+        bounds->width = 3.0f;
+        bounds->height = 3.0f;
+        return XR_SUCCESS;
+    }
+    return XR_SUCCESS;
 }
 
 XrResult Session::CreateReferenceSpace(const XrReferenceSpaceCreateInfo* createInfo, XrSpace* space)
@@ -1445,6 +1466,7 @@ XrResult Session::CreateReferenceSpace(const XrReferenceSpaceCreateInfo* createI
     auto sp = std::make_unique<Space>(this, Space::Type::Reference,
                                        createInfo->referenceSpaceType, createInfo->poseInReferenceSpace);
     *space = reinterpret_cast<XrSpace>(sp->GetHandle());
+    spdlog::debug("Session:   -> reference space handle {:#x} (total spaces now {})", sp->GetHandle(), spaces_.size() + 1);
     spaces_.push_back(std::move(sp));
     return XR_SUCCESS;
 }
@@ -1469,6 +1491,7 @@ XrResult Session::DestroySpace(Space* space)
     {
         if (it->get() == space)
         {
+            spdlog::debug("Session: game destroyed space handle {:#x} (total spaces now {})", space->GetHandle(), spaces_.size() - 1);
             spaces_.erase(it);
             return XR_SUCCESS;
         }

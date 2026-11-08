@@ -22,6 +22,7 @@
 #include "TimespecConversion.h"
 #include "VulkanDispatch.h"
 #include <spdlog/spdlog.h>
+#include <spdlog/fmt/fmt.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <cstring>
@@ -255,6 +256,25 @@ static std::vector<ExtensionInfo> GetSupportedExtensionInfos()
         {XR_EXT_HAND_INTERACTION_EXTENSION_NAME, XR_EXT_hand_interaction_SPEC_VERSION},
         {XR_EXT_DEBUG_UTILS_EXTENSION_NAME, XR_EXT_debug_utils_SPEC_VERSION},
         {VALVE_FRAME_CONTROLLER_EXTENSION_NAME, VALVE_FRAME_CONTROLLER_SPEC_VERSION},
+#ifdef XR_FB_hand_tracking_aim
+        // Link para Mac: OVRPlugin/ISDK hands need the FB aim state (pinch strengths, pointer pose)
+        // and the hand scale carried by XR_FB_hand_tracking_mesh; without HandScale > 0 the
+        // Interaction SDK marks hands as "not connected" and never shows them.
+        {XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME, XR_FB_hand_tracking_aim_SPEC_VERSION},
+#endif
+#ifdef XR_FB_hand_tracking_mesh
+        {XR_FB_HAND_TRACKING_MESH_EXTENSION_NAME, XR_FB_hand_tracking_mesh_SPEC_VERSION},
+#endif
+#ifdef XR_EXT_local_floor
+        // Link para Mac: Unity's OpenXR plugin keeps re-creating the Floor app space every frame unless the
+        // runtime advertises the LOCAL_FLOOR extension (the core-1.1 path alone does not satisfy it).
+        {XR_EXT_LOCAL_FLOOR_EXTENSION_NAME, XR_EXT_local_floor_SPEC_VERSION},
+#endif
+#ifdef XR_META_headset_id
+        // Link para Mac: Meta's Unity OpenXR feature (MetaXRFeature/OVRPlugin) only activates on runtimes
+        // that expose XR_META_headset_id; it is a system-properties UUID and costs nothing to provide.
+        {XR_META_HEADSET_ID_EXTENSION_NAME, XR_META_headset_id_SPEC_VERSION},
+#endif
 #ifdef XR_META_touch_controller_plus
         {XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME, XR_META_touch_controller_plus_SPEC_VERSION},
 #endif
@@ -305,6 +325,12 @@ static const char* ExtensionForFunctionName(const char* functionName)
     {
         return XR_EXT_HAND_TRACKING_EXTENSION_NAME;
     }
+#ifdef XR_FB_hand_tracking_mesh
+    if (std::strcmp(functionName, "xrGetHandMeshFB") == 0)
+    {
+        return XR_FB_HAND_TRACKING_MESH_EXTENSION_NAME;
+    }
+#endif
     if (std::strcmp(functionName, "xrSetInputDeviceActiveEXT") == 0 ||
         std::strcmp(functionName, "xrSetInputDeviceStateBoolEXT") == 0 ||
         std::strcmp(functionName, "xrSetInputDeviceStateFloatEXT") == 0 ||
@@ -624,9 +650,15 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrCreateInstance(
     }
 
     const XrVersion requestedApiVersion = createInfo->applicationInfo.apiVersion;
+    spdlog::info("OXRSys: xrCreateInstance requested OpenXR API {}.{}.{} (runtime built against {}.{}.{})",
+                 XR_VERSION_MAJOR(requestedApiVersion), XR_VERSION_MINOR(requestedApiVersion), XR_VERSION_PATCH(requestedApiVersion),
+                 XR_VERSION_MAJOR(XR_CURRENT_API_VERSION), XR_VERSION_MINOR(XR_CURRENT_API_VERSION), XR_VERSION_PATCH(XR_CURRENT_API_VERSION));
+    // Link para Mac: patch versions never change the API, so accept any patch of a supported major.minor
+    // (OVRPlugin asks for a newer 1.1.x patch than the OpenXR SDK this runtime was built against).
     if (requestedApiVersion == 0 || XR_VERSION_MAJOR(requestedApiVersion) != XR_VERSION_MAJOR(XR_CURRENT_API_VERSION) ||
-        requestedApiVersion > XR_CURRENT_API_VERSION)
+        XR_VERSION_MINOR(requestedApiVersion) > XR_VERSION_MINOR(XR_CURRENT_API_VERSION))
     {
+        spdlog::warn("OXRSys: Rejecting xrCreateInstance: unsupported OpenXR API version");
         return XR_ERROR_API_VERSION_UNSUPPORTED;
     }
 
@@ -723,7 +755,12 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrPollEvent(
     {
         return XR_ERROR_HANDLE_INVALID;
     }
-    return inst->PollEvent(eventData);
+    const XrResult r = inst->PollEvent(eventData);
+    if (r == XR_SUCCESS && eventData != nullptr)
+    {
+        spdlog::debug("OXRSys: xrPollEvent delivered event type {}", static_cast<int>(eventData->type));
+    }
+    return r;
 }
 
 static XRAPI_ATTR XrResult XRAPI_CALL OxrResultToString(
@@ -1311,7 +1348,8 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrLocateSpace(
     {
         return XR_ERROR_HANDLE_INVALID;
     }
-    return sp->LocateSpace(base, time, location);
+    const XrResult r = sp->LocateSpace(base, time, location);
+    return r;
 }
 
 static XRAPI_ATTR XrResult XRAPI_CALL OxrLocateSpaces(
@@ -3224,6 +3262,43 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrLocateHandJointsEXT(
     return ht->LocateHandJoints(locateInfo->baseSpace, locateInfo->time, locations);
 }
 
+#ifdef XR_FB_hand_tracking_mesh
+// Link para Mac: minimal XR_FB_hand_tracking_mesh. We have no skinned hand mesh to hand out; apps that
+// render Meta's hand mesh (OVRMesh) get an empty mesh and fall back, while the extension's other
+// payload (XrHandTrackingScaleFB chained to xrLocateHandJointsEXT) is what OVRPlugin/ISDK really need.
+static XRAPI_ATTR XrResult XRAPI_CALL OxrGetHandMeshFB(XrHandTrackerEXT handTracker, XrHandTrackingMeshFB* mesh)
+{
+    auto* ht = Runtime::Get().FromHandle<HandTracker>(reinterpret_cast<uint64_t>(handTracker));
+    if (!ht || mesh == nullptr || mesh->type != XR_TYPE_HAND_TRACKING_MESH_FB)
+    {
+        return XR_ERROR_VALIDATION_FAILURE;
+    }
+    if (!ht->GetSession()->GetInstance()->IsExtensionEnabled(XR_FB_HAND_TRACKING_MESH_EXTENSION_NAME))
+    {
+        return XR_ERROR_FUNCTION_UNSUPPORTED;
+    }
+    mesh->jointCountOutput = XR_HAND_JOINT_COUNT_EXT;
+    mesh->vertexCountOutput = 0;
+    mesh->indexCountOutput = 0;
+    if (mesh->jointCapacityInput == 0)
+    {
+        return XR_SUCCESS;  // first call of the two-call idiom: report sizes only
+    }
+    if (mesh->jointCapacityInput < XR_HAND_JOINT_COUNT_EXT || mesh->jointBindPoses == nullptr)
+    {
+        return XR_ERROR_SIZE_INSUFFICIENT;
+    }
+    for (uint32_t i = 0; i < XR_HAND_JOINT_COUNT_EXT; ++i)
+    {
+        mesh->jointBindPoses[i].orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+        mesh->jointBindPoses[i].position = {0.0f, 0.0f, 0.0f};
+        if (mesh->jointRadii != nullptr) mesh->jointRadii[i] = 0.01f;
+        if (mesh->jointParents != nullptr) mesh->jointParents[i] = i == 0 ? XR_HAND_JOINT_PALM_EXT : XR_HAND_JOINT_WRIST_EXT;
+    }
+    return XR_SUCCESS;
+}
+#endif
+
 // ============================================================================
 // Debug utils extension (XR_EXT_debug_utils)
 // ============================================================================
@@ -3881,12 +3956,16 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetInstanceProcAddr(
         inst = GetInstance(instance);
         if (inst == nullptr)
         {
+            // Link para Mac diagnostics: who asks for which function with which handle.
+            spdlog::warn("OXRSys: xrGetInstanceProcAddr('{}') with unknown instance handle {:#x} (current instance {:#x})",
+                         name, reinterpret_cast<uint64_t>(instance), gInstance ? gInstance->GetHandle() : 0ull);
             return XR_ERROR_HANDLE_INVALID;
         }
     }
 
     if (!IsFunctionEnabledForInstance(inst, name))
     {
+        spdlog::debug("OXRSys: xrGetInstanceProcAddr('{}') not enabled for this instance", name);
         return XR_ERROR_FUNCTION_UNSUPPORTED;
     }
 
@@ -3972,6 +4051,9 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetInstanceProcAddr(
     DISPATCH(xrCreateHandTrackerEXT, OxrCreateHandTrackerEXT)
     DISPATCH(xrDestroyHandTrackerEXT, OxrDestroyHandTrackerEXT)
     DISPATCH(xrLocateHandJointsEXT, OxrLocateHandJointsEXT)
+#ifdef XR_FB_hand_tracking_mesh
+    DISPATCH(xrGetHandMeshFB, OxrGetHandMeshFB)
+#endif
 
     // Debug utils extension
     DISPATCH(xrSetDebugUtilsObjectNameEXT, OxrSetDebugUtilsObjectNameEXT)

@@ -5122,12 +5122,22 @@ protocol::TrackingPacket XrApp::BuildTrackingPacket(XrTime predictedDisplayTime)
                 : protocol::TRACKING_FLAG_RIGHT_HAND_ACTIVE;
 
             auto& jointPayload = (hand == 0) ? packet.leftHandJoints : packet.rightHandJoints;
+            auto& rotationPayload = (hand == 0) ? packet.leftHandJointRotations : packet.rightHandJointRotations;
+            packet.trackingFlags |= protocol::TRACKING_FLAG_HAND_JOINT_ROTATIONS_VALID;
             for (uint32_t i = 0; i < XR_HAND_JOINT_COUNT_EXT; ++i)
             {
                 jointPayload[i][0] = jointLocations[i].pose.position.x;
                 jointPayload[i][1] = jointLocations[i].pose.position.y;
                 jointPayload[i][2] = jointLocations[i].pose.position.z;
                 jointPayload[i][3] = jointLocations[i].radius;
+                // Link para Mac: per-joint orientation (quantized), identity when the runtime has none.
+                const XrQuaternionf& q = HasValidJointOrientation(jointLocations[i])
+                    ? jointLocations[i].pose.orientation : XrQuaternionf{0.0f, 0.0f, 0.0f, 1.0f};
+                auto quantize = [](float v) { return static_cast<int16_t>(std::lround(std::clamp(v, -1.0f, 1.0f) * 32767.0f)); };
+                rotationPayload[i][0] = quantize(q.x);
+                rotationPayload[i][1] = quantize(q.y);
+                rotationPayload[i][2] = quantize(q.z);
+                rotationPayload[i][3] = quantize(q.w);
                 if (HasValidJointPosition(jointLocations[i]))
                 {
                     shellHands_[hand].jointActive[i] = true;
