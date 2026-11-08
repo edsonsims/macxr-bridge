@@ -1,0 +1,10 @@
+{
+  "name": "com.linkparamac.link",
+  "version": "0.1.0",
+  "displayName": "Link para Mac",
+  "description": "Unity Play Mode on a Meta Quest 3 from a Mac, like Quest Link on Windows — passthrough, anchors, MRUK room with labels, passthrough camera (PCA), environment depth and raycast, headset audio and microphone, microgestures — plus tools Quest Link does not have: mixed reality recording, live spectator stream, session record & replay (no headset needed) with deterministic perception tests, an in-headset debug overlay and performance HUD. Needs the OXRSys runtime fork from link-para-mac/oxrsys.",
+  "unity": "6000.0",
+  "author": { "name": "Edson Henrique" },
+  "keywords": ["quest", "openxr", "macos", "link", "mixed reality", "passthrough", "mruk"],
+  "license": "MIT"
+}
