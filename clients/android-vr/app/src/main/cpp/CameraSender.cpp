@@ -153,7 +153,7 @@ void CameraSender::PushFrame(const uint8_t* jpeg, int length, int width, int hei
     {
         cam::Hello hello = {};
         hello.eye = 0;
-        hello.maxFramerate = 10;
+        hello.maxFramerate = 30;
         hello.intrinsics = intr;
         hello.headFromCamera = headFromCam;
         protocol::TcpRecordHeader rec = {};

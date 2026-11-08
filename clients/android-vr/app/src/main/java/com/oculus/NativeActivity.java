@@ -147,7 +147,7 @@ public class NativeActivity extends android.app.NativeActivity
 
     private void startHeadsetCamera()
     {
-        if (headsetCamera != null) headsetCamera.start(0, 10);
+        if (headsetCamera != null) headsetCamera.start(0, 30); // Link para Mac: 30 fps for recordings
     }
 
     private void requestScenePermission()

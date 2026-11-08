@@ -50,6 +50,8 @@ public final class HeadsetCamera
     private CameraCaptureSession session;
     private ImageReader reader;
     private boolean running;
+    private static final int TARGET_WIDTH = 1280;
+    private static final int TARGET_HEIGHT = 960;
 
     // Intrinsics/extrinsics of the opened camera, read once from characteristics.
     private float fx, fy, cx, cy;
@@ -136,12 +138,14 @@ public final class HeadsetCamera
         if (map == null) return new Size(640, 480);
         Size[] sizes = map.getOutputSizes(ImageFormat.JPEG);
         if (sizes == null || sizes.length == 0) return new Size(640, 480);
-        // Prefer something around 640x480 to keep bandwidth and inference cost low.
+        // Link para Mac: 1280x960 (4:3, the full sensor width) — sharp enough for mixed reality recordings and
+        // still cheap over USB as JPEG. The inference model downsamples anyway.
         Size best = sizes[0];
         long bestScore = Long.MAX_VALUE;
         for (Size s : sizes)
         {
-            long score = Math.abs((long) s.getWidth() * s.getHeight() - 640L * 480L);
+            long score = Math.abs((long) s.getWidth() * s.getHeight() - (long) TARGET_WIDTH * TARGET_HEIGHT) +
+                         (s.getWidth() * 3 == s.getHeight() * 4 ? 0 : 1_000_000L); // prefer 4:3
             if (score < bestScore) { bestScore = score; best = s; }
         }
         return best;
@@ -240,6 +244,8 @@ public final class HeadsetCamera
                         b.addTarget(reader.getSurface());
                         long ns = 1_000_000_000L / targetFps;
                         b.set(CaptureRequest.SENSOR_FRAME_DURATION, ns);
+                        b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new android.util.Range<>(targetFps, targetFps));
+                        b.set(CaptureRequest.JPEG_QUALITY, (byte) 85);
                         s.setRepeatingRequest(b.build(), null, handler);
                         Log.i(TAG, "Passthrough camera streaming " + size.getWidth() + "x" + size.getHeight() + " @" + targetFps + "fps");
                     }
