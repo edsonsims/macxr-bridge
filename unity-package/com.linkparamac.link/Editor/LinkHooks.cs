@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: pontos de encaixe pro código do app. O Link é genérico (pacote com.linkparamac.link); o que é do
-// app — ligar a detecção real dele, onde a etiqueta pousou, o que o raycast de reserva deve ignorar — chega por uma
-// ponte pequena do próprio projeto (no Hello World: Assets/_Project/LinkParaMac/HelloWorldLinkHooks.cs).
+// Link para Mac: extension points for app code. The Link is generic (com.linkparamac.link package); what belongs to
+// the app (turning on its real detection, where the label landed, what the fallback raycast should ignore) comes
+// through a small bridge in the project itself (in Hello World: Assets/_Project/LinkParaMac/HelloWorldLinkHooks.cs).
 using System;
 using System.Collections.Generic;
 using UnityEngine;
@@ -10,9 +10,9 @@ namespace LinkParaMac.EditorTools
 {
     public static class LinkHooks
     {
-        /// <summary>O app colocou algo no mundo (rótulo, posição). Usado pelos testes de sessão e pela depuração.</summary>
+        /// <summary>The app placed something in the world (label, position). Used by session tests and debugging.</summary>
         public static event Action<string, Vector3> Placed;
-        /// <summary>Um lote de colocações (uma resposta da detecção).</summary>
+        /// <summary>A batch of placements (one detection response).</summary>
         public static event Action<IReadOnlyList<(string label, Vector3 position)>> PlacedBatch;
 
         public static void ReportPlaced(string label, Vector3 position) => Placed?.Invoke(label, position);
@@ -22,26 +22,26 @@ namespace LinkParaMac.EditorTools
             foreach (var p in batch) Placed?.Invoke(p.label, p.position);
         }
 
-        /// <summary>Liga a detecção REAL do app quando a câmera do Quest chega (desliga mocks, inscreve a fonte…).
-        /// Devolve um relatório curto.</summary>
+        /// <summary>Turns on the app's REAL detection when the Quest camera arrives (turns off mocks, subscribes the source…).
+        /// Returns a short report.</summary>
         public static Func<string> WireDetection;
-        /// <summary>Desfaz o WireDetection (fim do feed / do Play).</summary>
+        /// <summary>Undoes WireDetection (end of the feed / of Play).</summary>
         public static Action UnwireDetection;
-        /// <summary>Limiar de confiança do próprio app (o do agent/provider o Link já ajusta).</summary>
+        /// <summary>The app's own confidence threshold (the Link already adjusts the agent/provider one).</summary>
         public static Action<float> ApplyAppThreshold;
-        /// <summary>Colisores que o raycast de reserva deve ignorar (etiquetas do app, sala mock…).</summary>
+        /// <summary>Colliders the fallback raycast should ignore (app labels, mock room…).</summary>
         public static Func<Collider, bool> IgnoreCollider;
-        /// <summary>Diagnóstico: pausa/retoma a fonte de detecção do app.</summary>
+        /// <summary>Diagnostics: pauses/resumes the app's detection source.</summary>
         public static Action<bool> PauseAppDetection;
-        /// <summary>Uma linha extra no detect-status sobre a fonte do app.</summary>
+        /// <summary>An extra line in detect-status about the app's source.</summary>
         public static Func<string> AppStatus;
 
-        // Testes em passo travado: o teste decide quando o app pode começar a próxima detecção.
-        /// <summary>Comece uma detecção agora (no quadro atual).</summary>
+        // Lockstep tests: the test decides when the app may start the next detection.
+        /// <summary>Start a detection now (in the current frame).</summary>
         public static Action DetectNow;
-        /// <summary>Não comece outra até o próximo DetectNow.</summary>
+        /// <summary>Don't start another one until the next DetectNow.</summary>
         public static Action HoldDetection;
-        /// <summary>True se uma detecção começou depois do último DetectNow.</summary>
+        /// <summary>True if a detection started after the last DetectNow.</summary>
         public static Func<bool> DetectionStarted;
     }
 }

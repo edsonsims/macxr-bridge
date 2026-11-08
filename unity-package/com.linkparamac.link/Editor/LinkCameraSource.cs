@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: lê os quadros da câmera do Quest que o runtime do Mac relaya.
-// O runtime (liboxrsys-runtime.dylib) já está carregado no processo do Unity como runtime OpenXR
-// ativo; pegamos os símbolos C (oxrsys_camera_*) por dlsym e copiamos o RGBA pra uma Texture2D.
+// Link para Mac: reads the Quest camera frames relayed by the Mac runtime.
+// The runtime (liboxrsys-runtime.dylib) is already loaded in the Unity process as the active OpenXR
+// runtime; we grab the C symbols (oxrsys_camera_*) via dlsym and copy the RGBA into a Texture2D.
 
 using System;
 using System.IO;
@@ -37,10 +37,10 @@ namespace LinkParaMac.EditorTools
         static Texture2D _texture;
         static FrameInfo _lastInfo;
 
-        /// <summary>Cada quadro novo: RGBA com a linha 0 embaixo (como a textura). O buffer é reaproveitado: copie.</summary>
+        /// <summary>Each new frame: RGBA with row 0 at the bottom (like the texture). The buffer is reused: copy it.</summary>
         public static event Action<byte[], FrameInfo> FrameLoaded;
 
-        /// <summary>Depois de uma reprodução (LinkSession): volta a puxar do runtime do zero.</summary>
+        /// <summary>After a replay (LinkSession): starts pulling from the runtime again from scratch.</summary>
         public static void ResetAfterReplay()
         {
             _texture = null;
@@ -48,7 +48,7 @@ namespace LinkParaMac.EditorTools
             _lastInfo = default;
         }
 
-        /// <summary>Último quadro já carregado (puxa um mais novo se houver), sem disputar com o feed.</summary>
+        /// <summary>Latest frame already loaded (pulls a newer one if available), without competing with the feed.</summary>
         public static bool TryGetLatestTexture(out Texture2D texture, out FrameInfo info)
         {
             TryGetFrame(out _, out _);
@@ -64,15 +64,15 @@ namespace LinkParaMac.EditorTools
 
         static bool Resolve()
         {
-            if (_resolved) return true; // só guarda o sucesso: fora do Play o runtime não está carregado
-            // O runtime já está carregado no processo (runtime OpenXR ativo) e exporta os símbolos
-            // com visibilidade default. RTLD_DEFAULT acha a instância VIVA, sem carregar uma 2ª cópia
-            // (que teria um CameraRelay diferente, sem os quadros).
+            if (_resolved) return true; // only cache success: outside Play the runtime isn't loaded
+            // The runtime is already loaded in the process (active OpenXR runtime) and exports the symbols
+            // with default visibility. RTLD_DEFAULT finds the LIVE instance without loading a 2nd copy
+            // (which would have a different CameraRelay, without the frames).
             IntPtr pc = dlsym(RTLD_DEFAULT, "oxrsys_camera_connected");
             IntPtr pg = dlsym(RTLD_DEFAULT, "oxrsys_camera_get_latest");
             if (pc == IntPtr.Zero || pg == IntPtr.Zero)
             {
-                // Fallback: pega o handle da imagem JÁ carregada pelo caminho (NOLOAD nunca carrega cópia).
+                // Fallback: get the handle of the image ALREADY loaded, by path (NOLOAD never loads a copy).
                 string json = Environment.GetEnvironmentVariable("XR_RUNTIME_JSON");
                 if (!string.IsNullOrEmpty(json))
                 {
@@ -85,7 +85,7 @@ namespace LinkParaMac.EditorTools
                     }
                 }
             }
-            if (pc == IntPtr.Zero || pg == IntPtr.Zero) return false; // runtime ainda não carregado (fora do Play)
+            if (pc == IntPtr.Zero || pg == IntPtr.Zero) return false; // runtime not loaded yet (outside Play)
             _connected = Marshal.GetDelegateForFunctionPointer<ConnectedDelegate>(pc);
             _getLatest = Marshal.GetDelegateForFunctionPointer<GetLatestDelegate>(pg);
             _resolved = true;
@@ -94,14 +94,14 @@ namespace LinkParaMac.EditorTools
 
         public static bool IsConnected() => LinkSession.Replaying || (Resolve() && _connected() != 0);
 
-        /// <summary>Puxa o quadro mais recente (se mais novo). Atualiza a Texture2D e devolve o FrameInfo.</summary>
+        /// <summary>Pulls the most recent frame (if newer). Updates the Texture2D and returns the FrameInfo.</summary>
         public static bool TryGetFrame(out Texture2D texture, out FrameInfo info)
         {
             texture = _texture;
             info = default;
             if (LinkSession.Replaying)
             {
-                // Sessão gravada no lugar da câmera real (o headset pode nem estar ligado).
+                // Recorded session in place of the real camera (the headset may not even be on).
                 info = LinkSession.ReplayInfo;
                 var replay = LinkSession.ReplayTexture;
                 if (replay == null || info.frameId == 0 || info.frameId == _lastFrameId) return false;
@@ -113,7 +113,7 @@ namespace LinkParaMac.EditorTools
             }
             if (!Resolve()) return false;
 
-            // Primeira passada: descobrir dimensões sem copiar (capacidade 0).
+            // First pass: get the dimensions without copying (capacity 0).
             FrameInfo probe;
             _getLatest(IntPtr.Zero, 0, _lastFrameId, out probe);
             if (probe.valid == 0 || probe.width == 0 || probe.height == 0) { info = probe; return false; }
@@ -135,9 +135,9 @@ namespace LinkParaMac.EditorTools
 
             _lastFrameId = info.frameId;
             _lastInfo = info;
-            // O runtime entrega o RGBA de cima pra baixo (CoreGraphics); a Texture2D do Unity tem a linha 0 EMBAIXO.
-            // Sem inverter as linhas, a imagem ficava de cabeça pra baixo no quad, no YOLO e na projeção dos raios
-            // (o Edson viu "de cabeça pra baixo e espelhada"; o alinhamento com a profundidade confirmou: inversão vertical).
+            // The runtime delivers RGBA top to bottom (CoreGraphics); Unity's Texture2D has row 0 at the BOTTOM.
+            // Without flipping the rows, the image was upside down on the quad, in YOLO and in the ray projection
+            // (Edson saw it "upside down and mirrored"; alignment with depth confirmed it: a vertical flip).
             int row = (int)info.width * 4, rows = (int)info.height;
             if (_flipped == null || _flipped.Length < need) _flipped = new byte[need];
             for (int y = 0; y < rows; y++) Buffer.BlockCopy(_buffer, y * row, _flipped, (rows - 1 - y) * row, row);
@@ -148,21 +148,21 @@ namespace LinkParaMac.EditorTools
             return true;
         }
 
-        /// <summary>Salva o quadro atual como PNG (pra inspeção) e devolve um resumo.</summary>
+        /// <summary>Saves the current frame as a PNG (for inspection) and returns a summary.</summary>
         public static string Capture(string path)
         {
-            if (!IsConnected()) return "câmera não conectada (canal camera 9949)";
+            if (!IsConnected()) return "camera not connected (camera channel 9949)";
             if (!TryGetFrame(out var tex, out var info))
-                return $"sem quadro novo (valid={info.valid} {info.width}x{info.height} frameId={info.frameId})";
+                return $"no new frame (valid={info.valid} {info.width}x{info.height} frameId={info.frameId})";
             if (string.IsNullOrEmpty(path)) path = Path.Combine(Directory.GetCurrentDirectory(), ".link", "camera.png");
             Directory.CreateDirectory(Path.GetDirectoryName(path));
-            // EncodeToPNG grava a linha 0 da textura no topo do PNG: usamos o buffer original (de cima pra baixo).
+            // EncodeToPNG writes texture row 0 at the top of the PNG: we use the original buffer (top to bottom).
             var top = new Texture2D(tex.width, tex.height, TextureFormat.RGBA32, false);
             top.LoadRawTextureData(_buffer);
             top.Apply(false);
             File.WriteAllBytes(path, top.EncodeToPNG());
             UnityEngine.Object.DestroyImmediate(top);
-            return $"quadro {info.width}x{info.height} frameId={info.frameId} fx={info.fx:F1} fy={info.fy:F1} " +
+            return $"frame {info.width}x{info.height} frameId={info.frameId} fx={info.fx:F1} fy={info.fy:F1} " +
                    $"camPos=({info.px:F2},{info.py:F2},{info.pz:F2}) → {path}";
         }
     }

@@ -35,8 +35,8 @@ the Quest), with the Meta XR SDK 207 running unchanged in the Editor.
    OpenXR runtime, installs the microphone driver (asks for the Mac password once) and ffmpeg.
 2. Add this package to your project (`Packages/manifest.json`):
    `"com.linkparamac.link": "file:<path>/link-para-mac/unity-package/com.linkparamac.link"`
-3. **Window ▸ Link para Mac ▸ Instalação e diagnóstico** checks every piece and fixes what is missing (it also points
-   this Editor at the runtime, no special launch needed). **Window ▸ Link para Mac ▸ Painel** has everything else.
+3. **Window ▸ Link para Mac ▸ Setup & Diagnostics** checks every piece and fixes what is missing (it also points
+   this Editor at the runtime, no special launch needed). **Window ▸ Link para Mac ▸ Panel** has everything else.
 
 Requires: Apple Silicon Mac, Unity 6000.0, Meta XR SDK (core, MRUK) 207, OpenXR plug-in, Quest 3 in developer mode.
 

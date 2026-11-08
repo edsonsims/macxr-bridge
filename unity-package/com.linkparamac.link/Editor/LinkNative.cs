@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: acesso às funções C do runtime OXRSys já carregado no processo do Unity (dlsym RTLD_DEFAULT).
-// Fora do Play o runtime não está carregado: só o sucesso fica guardado.
+// Link para Mac: access to the C functions of the OXRSys runtime already loaded in the Unity process (dlsym RTLD_DEFAULT).
+// Outside Play the runtime isn't loaded: only successful lookups are cached.
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -23,7 +23,7 @@ namespace LinkParaMac.EditorTools
             return d;
         }
 
-        // Sessões: tracking do headset (cabeça, mãos, controles, microgestos) gravado e repetido pelo runtime.
+        // Sessions: headset tracking (head, hands, controllers, microgestures) recorded and replayed by the runtime.
         public delegate int PathDelegate([MarshalAs(UnmanagedType.LPUTF8Str)] string path);
         public delegate int IntDelegate();
         public delegate void VoidDelegate();
@@ -36,14 +36,14 @@ namespace LinkParaMac.EditorTools
         public static void TapeReplayStop() => Get<VoidDelegate>("oxrsys_tracking_replay_stop")?.Invoke();
         public static bool TapeSupported => Get<PathDelegate>("oxrsys_tracking_record_start") != null;
 
-        // Profundidade gravada no lugar da do headset (o raycast oficial do runtime responde pela sessão).
+        // Recorded depth in place of the headset's (the runtime's official raycast answers from the session).
         public delegate void DepthReplayModeDelegate(int on);
         public delegate void DepthInjectDelegate(ushort[] pixels, uint count, ref LinkDepth.DepthInfo info);
         public static void DepthReplayMode(bool on) => Get<DepthReplayModeDelegate>("oxrsys_depth_replay_mode")?.Invoke(on ? 1 : 0);
         public static void DepthInject(ushort[] pixels, LinkDepth.DepthInfo info) =>
             Get<DepthInjectDelegate>("oxrsys_depth_inject")?.Invoke(pixels, (uint)pixels.Length, ref info);
 
-        // Microfone do Quest (anel de 2 s no runtime, mono).
+        // Quest microphone (2 s ring buffer in the runtime, mono).
         public delegate int MicPullDelegate([Out] float[] dst, int maxSamples, out int sampleRate);
         public static int MicPull(float[] dst, out int sampleRate)
         {
@@ -52,7 +52,7 @@ namespace LinkParaMac.EditorTools
             return f == null ? 0 : f(dst, dst.Length, out sampleRate);
         }
 
-        // Estado do headset (HUD).
+        // Headset state (HUD).
         [StructLayout(LayoutKind.Sequential)]
         public struct ClientStats
         {

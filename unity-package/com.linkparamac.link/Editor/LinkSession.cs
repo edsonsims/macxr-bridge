@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: gravar e repetir sessões (comando "session").
-//   session rec [nome] [fps=N]   grava: quadros da câmera do Quest (JPEG), profundidade, pose da cabeça e a sala (MRUK)
-//   session stop                 para a gravação ou a reprodução
-//   session play [nome] [loop] [speed=X] [rig]
-//                                repete no Play Mode SEM precisar do headset: a câmera, a profundidade e o tracking
-//                                gravados (cabeça, mãos, controles, microgestos — pelo runtime, como se viessem do Quest)
-//                                entram no lugar dos reais, então o YOLO, os raios, as etiquetas e as interações rodam de
-//                                novo sobre a mesma cena (bom pra mexer no app sem pôr o headset a cada teste)
-//   session pause | resume | seek <s|+s|-s> | step [n] | speed <x>   linha do tempo da repetição
-//   session list | session       lista / estado
-// Pasta: <projeto>/Sessions/<nome>-<data>/ (cam/*.jpg, camera.csv, depth.bin + depth.csv, poses.csv, tracking.bin,
-// room.json). Sessões antigas sem tracking.bin movem só a cabeça (LinkSessionRig).
-// O Quest Link do Windows não grava nem repete sessões.
+// Link para Mac: record and replay sessions ("session" command).
+//   session rec [name] [fps=N]   records: Quest camera frames (JPEG), depth, head pose and the room (MRUK)
+//   session stop                 stops recording or replay
+//   session play [name] [loop] [speed=X] [rig]
+//                                replays in Play Mode WITHOUT the headset: the recorded camera, depth and tracking
+//                                (head, hands, controllers, microgestures — through the runtime, as if they came from the Quest)
+//                                replace the real ones, so YOLO, raycasts, labels and interactions run again
+//                                on the same scene (handy for working on the app without putting the headset on for every test)
+//   session pause | resume | seek <s|+s|-s> | step [n] | speed <x>   replay timeline
+//   session list | session       list / status
+// Folder: <project>/Sessions/<name>-<date>/ (cam/*.jpg, camera.csv, depth.bin + depth.csv, poses.csv, tracking.bin,
+// room.json). Old sessions without tracking.bin only move the head (LinkSessionRig).
+// Quest Link on Windows does not record or replay sessions.
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -42,7 +42,7 @@ namespace LinkParaMac.EditorTools
             {
                 if (s != PlayModeStateChange.ExitingPlayMode) return;
                 if (Recording) StopRecording();
-                if (Replaying) StopReplay("saiu do Play");
+                if (Replaying) StopReplay("left Play Mode");
             };
         }
 
@@ -54,13 +54,13 @@ namespace LinkParaMac.EditorTools
             switch (verb)
             {
                 case "rec": case "record": return StartRecording(rest);
-                case "stop": return Recording ? StopRecording() : Replaying ? StopReplay("parada à mão") : Status();
+                case "stop": return Recording ? StopRecording() : Replaying ? StopReplay("stopped by hand") : Status();
                 case "play": case "replay": return StartReplay(rest);
                 case "pause": return Pause(true);
                 case "resume": return Pause(false);
                 case "seek": return SeekCommand(rest);
                 case "step": return Step(int.TryParse(rest, out var n) ? n : 1);
-                case "speed": return double.TryParse(rest, NumberStyles.Float, Inv, out var sp) ? SetSpeed(sp) : "uso: session speed 0.5";
+                case "speed": return double.TryParse(rest, NumberStyles.Float, Inv, out var sp) ? SetSpeed(sp) : "usage: session speed 0.5";
                 case "list": return List();
                 case "test": case "baseline": return LinkSessionTests.Command(verb, rest);
                 case "report": return LinkSessionTests.Running ? LinkSessionTests.Progress : LinkSessionTests.LastReport;
@@ -71,15 +71,15 @@ namespace LinkParaMac.EditorTools
         public static string Status()
         {
             if (Recording)
-                return $"Sessão: gravando há {Now - _recStart:F0}s → {_recDir}\n" +
-                       $"  câmera {_camFrames} quadros ({_jpgWritten} JPEG gravados, {_camDropped} descartados), " +
-                       $"profundidade {_depthFrames}, poses {_poseCount}, sala {(_roomSaved ? "sim" : "não")}, tracking {(_tapeOk ? "sim" : "não (runtime antigo)")}";
+                return $"Session: recording for {Now - _recStart:F0}s → {_recDir}\n" +
+                       $"  camera {_camFrames} frames ({_jpgWritten} JPEG written, {_camDropped} dropped), " +
+                       $"depth {_depthFrames}, poses {_poseCount}, room {(_roomSaved ? "yes" : "no")}, tracking {(_tapeOk ? "yes" : "no (old runtime)")}";
             if (Replaying)
-                return $"Sessão: reproduzindo {Path.GetFileName(_rDir)} {(_rRunning ? $"{ReplayTime():F2}/{_rDuration:F1}s" : "(carregando a sala)")} " +
-                       $"{(_rPaused ? "PAUSADA " : "")}{(_rLoop ? $"em loop (volta {_rLoops}) " : "")}velocidade {_rSpeed:F2} " +
-                       $"quadro {_rCamIdx + 1}/{_rCams.Count} prof {_rDepthIdx + 1}/{_rDepth.Count} " +
-                       $"tracking={(_rTape ? "gravado (runtime)" : _rRig ? "só a cabeça (rig)" : "ao vivo")}";
-            return "Sessão: parada. Última: " + _last;
+                return $"Session: replaying {Path.GetFileName(_rDir)} {(_rRunning ? $"{ReplayTime():F2}/{_rDuration:F1}s" : "(loading the room)")} " +
+                       $"{(_rPaused ? "PAUSED " : "")}{(_rLoop ? $"looping (pass {_rLoops}) " : "")}speed {_rSpeed:F2} " +
+                       $"frame {_rCamIdx + 1}/{_rCams.Count} depth {_rDepthIdx + 1}/{_rDepth.Count} " +
+                       $"tracking={(_rTape ? "recorded (runtime)" : _rRig ? "head only (rig)" : "live")}";
+            return "Session: stopped. Last: " + _last;
         }
 
         static Transform Head()
@@ -97,11 +97,11 @@ namespace LinkParaMac.EditorTools
 
         static void Tick()
         {
-            if (Replaying) { try { ReplayTick(); } catch (Exception e) { Debug.LogWarning("[LinkSession] " + e); StopReplay("erro: " + e.Message); } }
-            else if (Recording) LinkCameraSource.TryGetLatestTexture(out _, out _); // puxa quadros mesmo sem o feed ligado
+            if (Replaying) { try { ReplayTick(); } catch (Exception e) { Debug.LogWarning("[LinkSession] " + e); StopReplay("error: " + e.Message); } }
+            else if (Recording) LinkCameraSource.TryGetLatestTexture(out _, out _); // pulls frames even when the feed is off
         }
 
-        // =============================== gravação ===============================
+        // =============================== recording ===============================
         public static bool Recording { get; private set; }
         static string _recDir;
         static double _recStart, _lastCamT;
@@ -121,9 +121,9 @@ namespace LinkParaMac.EditorTools
         static string StartRecording(string args)
         {
             if (Recording) return Status();
-            if (Replaying) return "pare a reprodução antes (session stop)";
-            if (!EditorApplication.isPlaying) return "só em Play Mode";
-            if (!LinkCameraSource.IsConnected()) return "a câmera do Quest não está conectada";
+            if (Replaying) return "stop the replay first (session stop)";
+            if (!EditorApplication.isPlaying) return "Play Mode only";
+            if (!LinkCameraSource.IsConnected()) return "the Quest camera is not connected";
             string name = "sessao";
             _minInterval = 0f;
             foreach (var part in args.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
@@ -138,7 +138,7 @@ namespace LinkParaMac.EditorTools
             _camCsv = new StreamWriter(Path.Combine(_recDir, "camera.csv")) { NewLine = "\n" };
             _camCsv.WriteLine("t,file,w,h,fx,fy,cx,cy");
             _depthCsv = new StreamWriter(Path.Combine(_recDir, "depth.csv")) { NewLine = "\n" };
-            // v (visão) já no mundo do Unity; r* = poses cruas no STAGE do cliente (pro raycast do runtime na repetição).
+            // v (view) already in Unity world space; r* = raw poses in the client's STAGE space (for the runtime raycast during replay).
             _depthCsv.WriteLine("t,offset,w,h,near,far,vpx,vpy,vpz,vqx,vqy,vqz,vqw,aL,aR,aU,aD,rvpx,rvpy,rvpz,rvqx,rvqy,rvqz,rvqw,rhpx,rhpy,rhpz,rhqx,rhqy,rhqz,rhqw");
             _depthBin = new FileStream(Path.Combine(_recDir, "depth.bin"), FileMode.Create, FileAccess.Write);
 
@@ -152,7 +152,7 @@ namespace LinkParaMac.EditorTools
                     _roomSaved = true;
                 }
             }
-            catch (Exception e) { Debug.LogWarning("[LinkSession] sala não salva: " + e.Message); }
+            catch (Exception e) { Debug.LogWarning("[LinkSession] room not saved: " + e.Message); }
 
             var rig = EnsureRig();
             var ts = rig != null ? rig.trackingSpace : null;
@@ -160,7 +160,7 @@ namespace LinkParaMac.EditorTools
                 $"nome={name}\ndata={DateTime.Now:yyyy-MM-dd HH:mm:ss}\nunity={Application.unityVersion}\n" +
                 $"cena={UnityEngine.SceneManagement.SceneManager.GetActiveScene().path}\n" +
                 $"trackingSpace={(ts != null ? $"{ts.position.ToString("F4")} {ts.rotation.eulerAngles.ToString("F2")}" : "-")}\n" +
-                $"sala={(_roomSaved ? "room.json" : "não")}\n");
+                $"sala={(_roomSaved ? "room.json" : "no")}\n");
 
             _jpgQueue = new BlockingCollection<(string, byte[], int, int)>(12);
             var queue = _jpgQueue;
@@ -171,7 +171,7 @@ namespace LinkParaMac.EditorTools
                 {
                     try
                     {
-                        // Linha 0 embaixo, como a textura do Unity: LoadImage na reprodução devolve a mesma textura.
+                        // Row 0 at the bottom, like the Unity texture: LoadImage during replay gives back the same texture.
                         byte[] jpg = ImageConversion.EncodeArrayToJPG(item.rgba, GraphicsFormat.R8G8B8A8_UNorm, (uint)item.w, (uint)item.h, 0, 90);
                         File.WriteAllBytes(item.path, jpg);
                         _jpgWritten++;
@@ -184,15 +184,15 @@ namespace LinkParaMac.EditorTools
 
             _camFrames = _camDropped = _depthFrames = _poseCount = 0;
             _lastCamT = -1;
-            _tapeOk = LinkNative.TapeRecordStart(Path.Combine(_recDir, "tracking.bin")); // mesmo t = 0 da gravação
+            _tapeOk = LinkNative.TapeRecordStart(Path.Combine(_recDir, "tracking.bin")); // same t = 0 as the recording
             _recStart = Now;
             LinkCameraSource.FrameLoaded += OnCameraFrame;
             LinkDepth.FrameLoaded += OnDepthFrame;
             LinkSessionRig.Late = OnLate;
             Recording = true;
-            Debug.Log("[LinkSession] gravando → " + _recDir);
-            return $"gravando a sessão (câmera{(_minInterval > 0 ? $" a {0.95f / _minInterval:F0} fps" : "")}, profundidade, {(_tapeOk ? "tracking (cabeça, mãos, controles)" : "cabeça")}" +
-                   $"{(_roomSaved ? ", sala" : ", SEM sala (room-load antes, se quiser)")}) → {_recDir}";
+            Debug.Log("[LinkSession] recording → " + _recDir);
+            return $"recording the session (camera{(_minInterval > 0 ? $" at {0.95f / _minInterval:F0} fps" : "")}, depth, {(_tapeOk ? "tracking (head, hands, controllers)" : "head")}" +
+                   $"{(_roomSaved ? ", room" : ", NO room (run room-load first if you want one)")}) → {_recDir}";
         }
 
         static void OnCameraFrame(byte[] rgbaBottomFirst, LinkCameraSource.FrameInfo info)
@@ -207,7 +207,7 @@ namespace LinkParaMac.EditorTools
             if (!_jpgQueue.TryAdd((Path.Combine(_recDir, file), buf, (int)info.width, (int)info.height))) { _camDropped++; _pool.Add(buf); return; }
             _camFrames++;
             _lastCamT = t;
-            float fy = info.fy < info.fx * 0.9f ? info.fx : info.fy; // mesma correção do feed
+            float fy = info.fy < info.fx * 0.9f ? info.fx : info.fy; // same correction as the feed
             _camCsv.WriteLine(string.Format(Inv, "{0:F4},{1},{2},{3},{4:F3},{5:F3},{6:F3},{7:F3}", t, file, info.width, info.height, info.fx, fy, info.cx, info.cy));
         }
 
@@ -252,13 +252,13 @@ namespace LinkParaMac.EditorTools
             _jpgThread.Join(15000);
             _poses.Dispose(); _camCsv.Dispose(); _depthCsv.Dispose(); _depthBin.Dispose();
             long size = new DirectoryInfo(_recDir).EnumerateFiles("*", SearchOption.AllDirectories).Sum(f => f.Length);
-            _last = $"{Path.GetFileName(_recDir)}: {seconds:F0}s, {_jpgWritten} quadros ({_camDropped} descartados), " +
-                    $"{_depthFrames} de profundidade, {_poseCount} poses, {tracking} pacotes de tracking, sala {(_roomSaved ? "sim" : "não")}, {size / 1048576.0:F0} MB";
-            Debug.Log("[LinkSession] gravada " + _last);
-            return "sessão gravada: " + _last + "\n→ " + _recDir;
+            _last = $"{Path.GetFileName(_recDir)}: {seconds:F0}s, {_jpgWritten} frames ({_camDropped} dropped), " +
+                    $"{_depthFrames} depth frames, {_poseCount} poses, {tracking} tracking packets, room {(_roomSaved ? "yes" : "no")}, {size / 1048576.0:F0} MB";
+            Debug.Log("[LinkSession] recorded " + _last);
+            return "session recorded: " + _last + "\n→ " + _recDir;
         }
 
-        // =============================== reprodução ===============================
+        // =============================== replay ===============================
         struct PoseRec { public double t; public Vector3 p; public Quaternion q; }
         struct CamRec { public double t; public string file; public uint w, h; public float fx, fy, cx, cy; }
         struct DepthRec { public double t; public long offset; public uint w, h; public float near, far, aL, aR, aU, aD; public Pose view; public float[] raw; }
@@ -288,11 +288,11 @@ namespace LinkParaMac.EditorTools
         public static bool TapeActive => _rTape;
         public static int CameraFrameIndex => _rCamIdx;
         public static int CameraFrameCount => _rCams.Count;
-        /// <summary>Por que a última repetição parou ("fim", "parada à mão", "saiu do Play"…).</summary>
+        /// <summary>Why the last replay stopped ("end", "stopped by hand", "left Play Mode"…).</summary>
         public static string LastStopReason { get; private set; } = "";
         public static LinkCameraSource.FrameInfo ReplayInfo => _rInfo;
 
-        /// <summary>Pose da cabeça gravada no instante atual da reprodução.</summary>
+        /// <summary>Recorded head pose at the current replay time.</summary>
         public static bool TryGetReplayHead(out Pose pose)
         {
             pose = _rHead ?? default;
@@ -324,9 +324,9 @@ namespace LinkParaMac.EditorTools
 
         static string StartReplay(string args)
         {
-            if (Recording) return "pare a gravação antes (session stop)";
-            if (!EditorApplication.isPlaying) return "só em Play Mode";
-            if (Replaying) StopReplay("trocada");
+            if (Recording) return "stop the recording first (session stop)";
+            if (!EditorApplication.isPlaying) return "Play Mode only";
+            if (Replaying) StopReplay("replaced");
             string name = "";
             _rLoop = false; _rSpeed = 1; _rPaused = false;
             bool forceRig = false, noRig = false;
@@ -340,13 +340,13 @@ namespace LinkParaMac.EditorTools
                 else name = part;
             }
             _rDir = FindSession(name);
-            if (_rDir == null) return "sessão não encontrada: " + (name == "" ? "(nenhuma gravada)" : name) + "\n" + List();
+            if (_rDir == null) return "session not found: " + (name == "" ? "(none recorded)" : name) + "\n" + List();
 
             _rPoses = Csv(Path.Combine(_rDir, "poses.csv")).Select(c => new PoseRec
             { t = D(c[0]), p = new Vector3(F(c[1]), F(c[2]), F(c[3])), q = new Quaternion(F(c[4]), F(c[5]), F(c[6]), F(c[7])) }).ToList();
             _rCams = Csv(Path.Combine(_rDir, "camera.csv")).Select(c => new CamRec
             { t = D(c[0]), file = c[1], w = uint.Parse(c[2]), h = uint.Parse(c[3]), fx = F(c[4]), fy = F(c[5]), cx = F(c[6]), cy = F(c[7]) })
-                .Where(c => File.Exists(Path.Combine(_rDir, c.file))).ToList(); // a gravação pode ter parado com JPEG na fila
+                .Where(c => File.Exists(Path.Combine(_rDir, c.file))).ToList(); // the recording may have stopped with JPEGs still queued
             _rDepth = Csv(Path.Combine(_rDir, "depth.csv")).Select(c => new DepthRec
             {
                 t = D(c[0]), offset = long.Parse(c[1]), w = uint.Parse(c[2]), h = uint.Parse(c[3]), near = F(c[4]), far = F(c[5]),
@@ -354,44 +354,44 @@ namespace LinkParaMac.EditorTools
                 aL = F(c[13]), aR = F(c[14]), aU = F(c[15]), aD = F(c[16]),
                 raw = c.Length >= 31 ? c.Skip(17).Take(14).Select(F).ToArray() : null,
             }).ToList();
-            if (_rCams.Count == 0) return "sessão sem quadros de câmera: " + _rDir;
+            if (_rCams.Count == 0) return "session has no camera frames: " + _rDir;
             _rDuration = Math.Max(_rCams[_rCams.Count - 1].t, Math.Max(_rPoses.Count > 0 ? _rPoses[_rPoses.Count - 1].t : 0, _rDepth.Count > 0 ? _rDepth[_rDepth.Count - 1].t : 0));
             string bin = Path.Combine(_rDir, "depth.bin");
             _rDepthBin = _rDepth.Count > 0 && File.Exists(bin) ? new FileStream(bin, FileMode.Open, FileAccess.Read) : null;
             _rCamIdx = _rDepthIdx = -1; _rLoops = 0; _rHead = null; _rRunning = false;
-            // Tracking gravado pelo runtime (cabeça, mãos, controles, microgestos): a cabeça vem por ele, sem mexer no rig.
+            // Tracking recorded by the runtime (head, hands, controllers, microgestures): the head comes through it, without touching the rig.
             _rTape = File.Exists(Path.Combine(_rDir, "tracking.bin")) && LinkNative.TapeSupported;
             _rRig = forceRig || (!_rTape && !noRig);
             Replaying = true;
             LinkDepth.ReplayActive = true;
-            LinkNative.DepthReplayMode(true); // o raycast oficial (runtime) também responde pela profundidade gravada
+            LinkNative.DepthReplayMode(true); // the official (runtime) raycast also answers from the recorded depth
             if (_rRig)
             {
                 EnsureRig();
                 LinkSessionRig.TargetHead = () => Replaying && _rRunning ? _rHead : null;
             }
 
-            // A sala primeiro (com o TrackingSpace ainda no lugar), depois o relógio começa.
+            // Room first (with the TrackingSpace still in place), then the clock starts.
             string room = Path.Combine(_rDir, "room.json");
-            string roomMsg = "sem sala gravada";
+            string roomMsg = "no recorded room";
             if (File.Exists(room))
             {
                 var mruk = RoomTestTools.Ensure();
                 _rWorldLock = mruk.EnableWorldLock;
-                mruk.EnableWorldLock = false; // senão o MRUK disputa o TrackingSpace com a cabeça gravada
-                roomMsg = "carregando a sala gravada";
+                mruk.EnableWorldLock = false; // otherwise MRUK fights the recorded head over the TrackingSpace
+                roomMsg = "loading the recorded room";
                 mruk.LoadSceneFromJsonString(File.ReadAllText(room)).ContinueWith(t =>
                 {
-                    Debug.Log("[LinkSession] sala da sessão: " + (t.IsFaulted ? "falhou " + t.Exception?.GetBaseException().Message : t.Result.ToString()));
+                    Debug.Log("[LinkSession] session room: " + (t.IsFaulted ? "failed " + t.Exception?.GetBaseException().Message : t.Result.ToString()));
                     BeginClock();
                 }, System.Threading.Tasks.TaskScheduler.FromCurrentSynchronizationContext());
             }
             else BeginClock();
 
-            Debug.Log("[LinkSession] reproduzindo " + _rDir);
-            return $"reproduzindo {Path.GetFileName(_rDir)}: {_rDuration:F1}s, {_rCams.Count} quadros, {_rDepth.Count} de profundidade, " +
-                   $"{_rPoses.Count} poses; {roomMsg}{(_rLoop ? "; em loop" : "")}" +
-                   $"{(_rTape ? "; tracking gravado (cabeça, mãos, controles) entra pelo runtime" : _rRig ? "; a cabeça do app segue a gravada" : "")}";
+            Debug.Log("[LinkSession] replaying " + _rDir);
+            return $"replaying {Path.GetFileName(_rDir)}: {_rDuration:F1}s, {_rCams.Count} frames, {_rDepth.Count} depth frames, " +
+                   $"{_rPoses.Count} poses; {roomMsg}{(_rLoop ? "; looping" : "")}" +
+                   $"{(_rTape ? "; recorded tracking (head, hands, controllers) comes in through the runtime" : _rRig ? "; the app's head follows the recorded one" : "")}";
         }
 
         static void BeginClock()
@@ -409,16 +409,16 @@ namespace LinkParaMac.EditorTools
             if (_rTape) LinkNative.TapeReplayClock(ReplayTime(), _rPaused ? 0 : _rSpeed);
         }
 
-        // ---------- linha do tempo ----------
+        // ---------- timeline ----------
         public static string Pause(bool pause)
         {
-            if (!Replaying || !_rRunning) return "nenhuma reprodução";
+            if (!Replaying || !_rRunning) return "no replay running";
             if (_rPaused == pause) return Status();
             _rBaseT = ReplayTime();
             _rBaseWall = Now;
             _rPaused = pause;
             PushTapeClock();
-            return (pause ? "pausada em " : "continuando de ") + _rBaseT.ToString("F2", Inv) + " s";
+            return (pause ? "paused at " : "resuming from ") + _rBaseT.ToString("F2", Inv) + " s";
         }
 
         public static void Seek(double t)
@@ -426,47 +426,47 @@ namespace LinkParaMac.EditorTools
             if (!Replaying || !_rRunning) return;
             _rBaseT = Math.Max(0, Math.Min(_rDuration, t));
             _rBaseWall = Now;
-            _rCamIdx = _rDepthIdx = -1; // recarrega o quadro e a profundidade do novo instante
+            _rCamIdx = _rDepthIdx = -1; // reloads the frame and depth for the new time
             PushTapeClock();
         }
 
         static string SeekCommand(string arg)
         {
-            if (!Replaying || !_rRunning) return "nenhuma reprodução";
+            if (!Replaying || !_rRunning) return "no replay running";
             arg = arg.Trim();
-            if (!double.TryParse(arg.TrimStart('+'), NumberStyles.Float, Inv, out var v)) return "uso: session seek 12.5 | +2 | -2";
+            if (!double.TryParse(arg.TrimStart('+'), NumberStyles.Float, Inv, out var v)) return "usage: session seek 12.5 | +2 | -2";
             Seek(arg.StartsWith("+") || arg.StartsWith("-") ? ReplayTime() + v : v);
-            return $"em {ReplayTime():F2}/{_rDuration:F1} s";
+            return $"at {ReplayTime():F2}/{_rDuration:F1} s";
         }
 
         public static string Step(int frames)
         {
-            if (!Replaying || !_rRunning) return "nenhuma reprodução";
+            if (!Replaying || !_rRunning) return "no replay running";
             if (!_rPaused) Pause(true);
             int current = Math.Max(0, LastAtOrBefore(_rCams.Count, i => _rCams[i].t, ReplayTime()));
             int target = Math.Max(0, Math.Min(_rCams.Count - 1, current + frames));
             Seek(_rCams[target].t + 1e-4);
-            return $"quadro {target + 1}/{_rCams.Count} ({_rCams[target].t:F2} s, pausada)";
+            return $"frame {target + 1}/{_rCams.Count} ({_rCams[target].t:F2} s, paused)";
         }
 
         public static string SetSpeed(double speed)
         {
-            if (!Replaying || !_rRunning) return "nenhuma reprodução";
+            if (!Replaying || !_rRunning) return "no replay running";
             _rBaseT = ReplayTime();
             _rBaseWall = Now;
             _rSpeed = Math.Max(0.05, Math.Min(4.0, speed));
             PushTapeClock();
-            return $"velocidade {_rSpeed:F2}";
+            return $"speed {_rSpeed:F2}";
         }
 
         static void ReplayTick()
         {
-            if (!EditorApplication.isPlaying) { StopReplay("saiu do Play"); return; }
+            if (!EditorApplication.isPlaying) { StopReplay("left Play Mode"); return; }
             if (!_rRunning) return;
             double t = ReplayTime();
             if (t > _rDuration)
             {
-                if (!_rLoop) { StopReplay("fim"); return; }
+                if (!_rLoop) { StopReplay("end"); return; }
                 _rLoops++;
                 _rBaseT = 0;
                 _rBaseWall = Now;
@@ -534,7 +534,7 @@ namespace LinkParaMac.EditorTools
             };
             LinkDepth.InjectReplay(info, _rDepthData, d.view);
 
-            // Pro runtime: poses no STAGE do cliente. Sessões antigas: desfaz a conversão do Unity (FlipZ).
+            // For the runtime: poses in the client's STAGE space. Old sessions: undo Unity's conversion (FlipZ).
             var r = d.raw ?? new[] { d.view.position.x, d.view.position.y, -d.view.position.z, -d.view.rotation.x, -d.view.rotation.y, d.view.rotation.z, d.view.rotation.w,
                                       d.view.position.x, d.view.position.y, -d.view.position.z, -d.view.rotation.x, -d.view.rotation.y, d.view.rotation.z, d.view.rotation.w };
             info.vpx = r[0]; info.vpy = r[1]; info.vpz = r[2]; info.vqx = r[3]; info.vqy = r[4]; info.vqz = r[5]; info.vqw = r[6];
@@ -545,7 +545,7 @@ namespace LinkParaMac.EditorTools
         static string StopReplay(string why)
         {
             if (!Replaying) return Status();
-            string summary = $"{Path.GetFileName(_rDir)} ({why}; {ReplayTime():F1}s, {_rCamIdx + 1} quadros, voltas {_rLoops})";
+            string summary = $"{Path.GetFileName(_rDir)} ({why}; {ReplayTime():F1}s, {_rCamIdx + 1} frames, loops {_rLoops})";
             LastStopReason = why;
             Replaying = false;
             _rRunning = false;
@@ -560,23 +560,23 @@ namespace LinkParaMac.EditorTools
             _rDepthBin?.Dispose(); _rDepthBin = null;
             if (MRUK.Instance != null && File.Exists(Path.Combine(_rDir, "room.json"))) MRUK.Instance.EnableWorldLock = _rWorldLock;
             if (_rTex != null) { UnityEngine.Object.Destroy(_rTex); _rTex = null; }
-            _last = "reprodução de " + summary;
+            _last = "replay of " + summary;
             Debug.Log("[LinkSession] " + _last);
-            return "reprodução parada: " + summary;
+            return "replay stopped: " + summary;
         }
 
         static string List()
         {
-            if (!Directory.Exists(Root)) return "nenhuma sessão gravada (pasta Sessions/ ainda não existe)";
+            if (!Directory.Exists(Root)) return "no sessions recorded (the Sessions/ folder does not exist yet)";
             var lines = new DirectoryInfo(Root).GetDirectories().OrderBy(d => d.Name).Select(d =>
             {
                 int cams = Math.Max(0, File.Exists(Path.Combine(d.FullName, "camera.csv")) ? File.ReadLines(Path.Combine(d.FullName, "camera.csv")).Count() - 1 : 0);
                 string last = File.Exists(Path.Combine(d.FullName, "camera.csv")) ? File.ReadLines(Path.Combine(d.FullName, "camera.csv")).LastOrDefault() : null;
                 string dur = last != null && cams > 0 ? last.Split(',')[0] : "0";
                 bool room = File.Exists(Path.Combine(d.FullName, "room.json"));
-                return $"  {d.Name}: {dur}s, {cams} quadros{(room ? ", com sala" : "")}";
+                return $"  {d.Name}: {dur}s, {cams} frames{(room ? ", with room" : "")}";
             });
-            return "Sessões em " + Root + ":\n" + string.Join("\n", lines);
+            return "Sessions in " + Root + ":\n" + string.Join("\n", lines);
         }
     }
 }

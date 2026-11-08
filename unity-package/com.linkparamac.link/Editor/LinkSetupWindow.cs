@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: instalação e diagnóstico (Window > Link para Mac > Instalação e diagnóstico).
-// Confere cada peça e oferece o botão que resolve: runtime compilado, este Unity usando o runtime (sem precisar
-// abrir o Unity por script), XR do projeto, app no Quest, microfone do Quest, ffmpeg. "Instalar tudo" roda
-// link-para-mac/scripts/install.sh no Terminal (instalação em um passo).
+// Link para Mac: setup and diagnostics (Window > Link para Mac > Setup & Diagnostics).
+// Checks each piece and offers the button that fixes it: compiled runtime, this Unity using the runtime (without having
+// to launch Unity from a script), project XR, app on the Quest, Quest microphone, ffmpeg. "Install everything" runs
+// link-para-mac/scripts/install.sh in Terminal (one-step install).
 using System;
 using System.Diagnostics;
 using System.IO;
@@ -17,8 +17,8 @@ using UnityEngine.XR.OpenXR;
 
 namespace LinkParaMac.EditorTools
 {
-    // Este Unity passa a usar o runtime do Link sem ser aberto por script: XR_RUNTIME_JSON no processo antes do Play.
-    // (Classe à parte: o construtor estático de uma EditorWindow roda na desserialização, onde EditorPrefs é proibido.)
+    // This Unity uses the Link runtime without being launched from a script: XR_RUNTIME_JSON is set in the process before Play.
+    // (Separate class: an EditorWindow's static constructor runs during deserialization, where EditorPrefs is not allowed.)
     [InitializeOnLoad]
     static class LinkRuntimeEnv
     {
@@ -39,14 +39,14 @@ namespace LinkParaMac.EditorTools
         {
             setenv("XR_RUNTIME_JSON", LinkSetupWindow.RuntimeJson, 1);
             Environment.SetEnvironmentVariable("XR_RUNTIME_JSON", LinkSetupWindow.RuntimeJson);
-            UnityEngine.Debug.Log("[LinkParaMac] este Unity usa o runtime do Link: " + LinkSetupWindow.RuntimeJson);
+            UnityEngine.Debug.Log("[LinkParaMac] this Unity uses the Link runtime: " + LinkSetupWindow.RuntimeJson);
         }
     }
 
     public class LinkSetupWindow : EditorWindow
     {
-        [MenuItem("Window/Link para Mac/Instalação e diagnóstico", priority = 1)]
-        public static void Open() => GetWindow<LinkSetupWindow>("Link: instalação");
+        [MenuItem("Window/Link para Mac/Setup & Diagnostics", priority = 1)]
+        public static void Open() => GetWindow<LinkSetupWindow>("Link: Setup");
 
         static string Root => LinkPanel.LinkRoot;
         public static string RuntimeJson => Path.Combine(Root, "oxrsys", "build", "macos-arm64", "runtime", "oxrsys-runtime.json");
@@ -54,7 +54,7 @@ namespace LinkParaMac.EditorTools
         static string Apk => Path.Combine(Root, "oxrsys", "clients", "android-vr", "app", "build", "outputs", "apk", "release", "app-release.apk");
         const string Ffmpeg = "/opt/homebrew/bin/ffmpeg";
 
-        static string _adbState = "(conferindo…)", _adbAction = "";
+        static string _adbState = "(checking…)", _adbAction = "";
         static bool _adbBusy;
         static double _nextAdbCheck;
 
@@ -65,11 +65,11 @@ namespace LinkParaMac.EditorTools
             return null;
         }
 
-        // adb sempre fora da thread principal (nunca trava o Editor).
+        // adb always runs off the main thread (never blocks the Editor).
         static void RunAdb(string args, Action<string> done)
         {
             string adb = Adb();
-            if (adb == null) { done("adb não encontrado (instale o Android SDK platform-tools)"); return; }
+            if (adb == null) { done("adb not found (install the Android SDK platform-tools)"); return; }
             _adbBusy = true;
             new Thread(() =>
             {
@@ -78,7 +78,7 @@ namespace LinkParaMac.EditorTools
                 {
                     var p = Process.Start(new ProcessStartInfo(adb, args) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true });
                     output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
-                    if (!p.WaitForExit(120000)) { try { p.Kill(); } catch { } output += " (tempo esgotado)"; }
+                    if (!p.WaitForExit(120000)) { try { p.Kill(); } catch { } output += " (timed out)"; }
                 }
                 catch (Exception e) { output = e.Message; }
                 _adbBusy = false;
@@ -92,10 +92,10 @@ namespace LinkParaMac.EditorTools
             RunAdb("devices", devices =>
             {
                 var line = devices.Split('\n').Skip(1).FirstOrDefault(l => l.Trim().Length > 0);
-                if (line == null) { _adbState = "nenhum Quest no cabo"; return; }
-                if (line.Contains("unauthorized")) { _adbState = "Quest no cabo, mas a depuração USB não foi aceita (aceite no headset com \"Sempre permitir\")"; return; }
+                if (line == null) { _adbState = "no Quest connected by cable"; return; }
+                if (line.Contains("unauthorized")) { _adbState = "Quest connected by cable, but USB debugging was not accepted (accept it on the headset with \"Always allow\")"; return; }
                 RunAdb("shell pm list packages net.demonixis.oxrsys.android", pkg =>
-                    _adbState = pkg.Contains("net.demonixis.oxrsys.android") ? "Quest no cabo, app OXRSys instalado" : "Quest no cabo, app OXRSys NÃO instalado");
+                    _adbState = pkg.Contains("net.demonixis.oxrsys.android") ? "Quest connected by cable, OXRSys app installed" : "Quest connected by cable, OXRSys app NOT installed");
             });
         }
 
@@ -108,10 +108,10 @@ namespace LinkParaMac.EditorTools
         static bool XrConfigured(out string detail)
         {
             detail = "";
-            if (!EditorBuildSettings.TryGetConfigObject(XRGeneralSettings.k_SettingsKey, out XRGeneralSettingsPerBuildTarget per) || per == null) { detail = "XR Plug-in Management sem configuração"; return false; }
+            if (!EditorBuildSettings.TryGetConfigObject(XRGeneralSettings.k_SettingsKey, out XRGeneralSettingsPerBuildTarget per) || per == null) { detail = "XR Plug-in Management is not configured"; return false; }
             var gs = per.SettingsForBuildTarget(BuildTargetGroup.Standalone);
             bool ok = gs != null && gs.Manager != null && gs.Manager.activeLoaders.Any(l => l is OpenXRLoader);
-            detail = ok ? "OpenXR ativo no macOS (Standalone)" : "OpenXR não está ativo no macOS (Standalone)";
+            detail = ok ? "OpenXR active on macOS (Standalone)" : "OpenXR is not active on macOS (Standalone)";
             return ok;
         }
 
@@ -141,46 +141,46 @@ namespace LinkParaMac.EditorTools
         void OnGUI()
         {
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
-            EditorGUILayout.LabelField("Link para Mac — instalação e diagnóstico", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox("Unity Play Mode no Quest 3 a partir do Mac (como o Quest Link do Windows), com câmera, profundidade, sala, " +
-                                    "áudio, microfone, microgestos, gravação, sessões e espectador.", MessageType.None);
+            EditorGUILayout.LabelField("Link para Mac — setup and diagnostics", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox("Unity Play Mode on Quest 3 from the Mac (like Quest Link on Windows), with camera, depth, room, " +
+                                    "audio, microphone, microgestures, recording, sessions and spectator view.", MessageType.None);
             using (new EditorGUILayout.HorizontalScope())
             {
-                EditorGUILayout.LabelField("Pasta do Link para Mac", GUILayout.Width(150));
+                EditorGUILayout.LabelField("Link para Mac folder", GUILayout.Width(150));
                 EditorGUILayout.SelectableLabel(Root, GUILayout.Height(18));
-                if (GUILayout.Button("Escolher…", GUILayout.Width(90)))
+                if (GUILayout.Button("Choose…", GUILayout.Width(90)))
                 {
-                    string p = EditorUtility.OpenFolderPanel("Pasta link-para-mac", Root, "");
+                    string p = EditorUtility.OpenFolderPanel("link-para-mac folder", Root, "");
                     if (!string.IsNullOrEmpty(p)) LinkPanel.LinkRoot = p;
                 }
             }
-            if (GUILayout.Button("Instalar tudo (Terminal: scripts/install.sh)", GUILayout.Height(28)))
+            if (GUILayout.Button("Install everything (Terminal: scripts/install.sh)", GUILayout.Height(28)))
                 Terminal($"zsh '{Path.Combine(Root, "scripts", "install.sh")}'");
             EditorGUILayout.Space();
 
-            Row(Directory.Exists(Path.Combine(Root, "scripts")), "Pasta", Directory.Exists(Path.Combine(Root, "scripts")) ? "encontrada" : "não encontrada — escolha a pasta link-para-mac");
+            Row(Directory.Exists(Path.Combine(Root, "scripts")), "Folder", Directory.Exists(Path.Combine(Root, "scripts")) ? "found" : "not found — choose the link-para-mac folder");
             bool runtime = File.Exists(RuntimeDylib) && File.Exists(RuntimeJson);
-            Row(runtime, "Runtime OpenXR do Mac", runtime ? "compilado" : "não compilado", "Compilar (Terminal)", () => Terminal($"zsh '{Path.Combine(Root, "scripts", "10-build-runtime.sh")}'"));
+            Row(runtime, "Mac OpenXR runtime", runtime ? "built" : "not built", "Build (Terminal)", () => Terminal($"zsh '{Path.Combine(Root, "scripts", "10-build-runtime.sh")}'"));
             string env = Environment.GetEnvironmentVariable("XR_RUNTIME_JSON") ?? "";
             bool usesRuntime = env == RuntimeJson || (env.Contains("oxrsys") && File.Exists(env));
-            Row(usesRuntime, "Este Unity usa o runtime", usesRuntime ? env : "XR_RUNTIME_JSON não aponta pro Link", "Usar neste Unity", () => { LinkRuntimeEnv.Use(); EditorPrefs.SetBool(LinkRuntimeEnv.AutoEnvKey, true); });
+            Row(usesRuntime, "This Unity uses the runtime", usesRuntime ? env : "XR_RUNTIME_JSON does not point to Link", "Use in this Unity", () => { LinkRuntimeEnv.Use(); EditorPrefs.SetBool(LinkRuntimeEnv.AutoEnvKey, true); });
             bool xr = XrConfigured(out var xrDetail);
-            Row(xr, "Projeto", xrDetail, "Configurar XR", () => UnityEngine.Debug.Log("[LinkSetup] " + LinkBridge.ConfigureStandaloneXR()));
+            Row(xr, "Project", xrDetail, "Configure XR", () => UnityEngine.Debug.Log("[LinkSetup] " + LinkBridge.ConfigureStandaloneXR()));
             bool apk = File.Exists(Apk);
-            Row(_adbState.Contains("instalado") && !_adbState.Contains("NÃO"), "Quest", _adbState + (_adbAction != "" ? " · " + _adbAction : ""),
-                apk ? "Instalar app no Quest" : "Compilar app (Terminal)", () =>
+            Row(_adbState.Contains("app installed"), "Quest", _adbState + (_adbAction != "" ? " · " + _adbAction : ""),
+                apk ? "Install app on Quest" : "Build app (Terminal)", () =>
                 {
                     if (!apk) { Terminal($"zsh '{Path.Combine(Root, "scripts", "30-build-quest-client.sh")}'"); return; }
-                    _adbAction = "instalando…";
-                    RunAdb($"install -r \"{Apk}\"", r => { _adbAction = r.Contains("Success") ? "app instalado" : r; RunAdb("shell pm grant net.demonixis.oxrsys.android android.permission.RECORD_AUDIO", _ => { }); CheckQuest(); });
+                    _adbAction = "installing…";
+                    RunAdb($"install -r \"{Apk}\"", r => { _adbAction = r.Contains("Success") ? "app installed" : r; RunAdb("shell pm grant net.demonixis.oxrsys.android android.permission.RECORD_AUDIO", _ => { }); CheckQuest(); });
                 });
             bool mic = Microphone.devices.Contains(LinkMic.DeviceName);
-            Row(mic, "Microfone do Quest", mic ? "\"" + LinkMic.DeviceName + "\" instalado" : "dispositivo não instalado", "Instalar (pede a senha)",
+            Row(mic, "Quest Microphone", mic ? "\"" + LinkMic.DeviceName + "\" installed" : "device not installed", "Install (asks for password)",
                 () => Terminal($"zsh '{Path.Combine(Root, "scripts", "65-install-mic-driver.sh")}'"));
             bool ffmpeg = File.Exists(Ffmpeg);
-            Row(ffmpeg, "ffmpeg", ffmpeg ? "presente (gravações)" : "ausente — gravação de vídeo não funciona", "brew install ffmpeg", () => Terminal("brew install ffmpeg"));
+            Row(ffmpeg, "ffmpeg", ffmpeg ? "present (recordings)" : "missing — video recording will not work", "brew install ffmpeg", () => Terminal("brew install ffmpeg"));
             EditorGUILayout.Space();
-            if (GUILayout.Button("Abrir o painel do Link")) LinkPanel.Open();
+            if (GUILayout.Button("Open the Link panel")) LinkPanel.Open();
             EditorGUILayout.EndScrollView();
         }
     }

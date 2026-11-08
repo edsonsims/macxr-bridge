@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Link para Mac: mantém o sensor de presença do Quest "fechado" enquanto o headset está fora da cabeça
-# (testes sem ninguém usando). Reenvia prox_close a cada 5 s. Parar: kill $(cat .runner/prox-keepalive.pid)
+# Link para Mac: keeps the Quest proximity sensor "closed" while the headset is off the head
+# (tests with nobody wearing it). Resends prox_close every 5 s. To stop: kill $(cat .runner/prox-keepalive.pid)
 source "$(dirname "${(%):-%x}")/common.sh"
 adb="$(adb_bin)"
 while true; do

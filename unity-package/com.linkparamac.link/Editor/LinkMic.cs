@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: microfone do Quest no Mac (comando "mic", "mic test", "mic default on|off").
-// O cliente manda o mic do headset pelo Link; o runtime entrega ao dispositivo "Quest 3 Microphone (Link para Mac)"
-// (driver em link-para-mac/mic-driver), que fica como entrada padrão do Mac enquanto o app roda. Assim o
-// Microphone do Unity (e qualquer app) grava a voz do headset, como o "Headset Microphone" do Quest Link no Windows.
+// Link para Mac: Quest microphone on the Mac ("mic", "mic test", "mic default on|off" commands).
+// The client sends the headset mic over the Link; the runtime delivers it to the "Quest 3 Microphone (Link para Mac)"
+// device (driver in link-para-mac/mic-driver), which becomes the Mac's default input while the app runs. That way
+// Unity's Microphone (and any app) records the headset voice, like Quest Link's "Headset Microphone" on Windows.
 using System;
 using System.Runtime.InteropServices;
 using UnityEditor;
@@ -45,7 +45,7 @@ namespace LinkParaMac.EditorTools
         {
             if (_status != null) return true;
             IntPtr s = dlsym(RTLD_DEFAULT, "oxrsys_mic_status"), d = dlsym(RTLD_DEFAULT, "oxrsys_mic_set_default");
-            if (s == IntPtr.Zero || d == IntPtr.Zero) return false; // runtime não carregado (fora do Play) ou antigo
+            if (s == IntPtr.Zero || d == IntPtr.Zero) return false; // runtime not loaded (outside Play) or too old
             _status = Marshal.GetDelegateForFunctionPointer<StatusDelegate>(s);
             _setDefault = Marshal.GetDelegateForFunctionPointer<SetDefaultDelegate>(d);
             return true;
@@ -69,8 +69,8 @@ namespace LinkParaMac.EditorTools
             if (a == "test") return StartTest();
             if (a == "default on" || a == "default off")
             {
-                if (!Resolve()) return "runtime sem oxrsys_mic_set_default (entre em Play)";
-                return _setDefault(a == "default on" ? 1 : 0) != 0 ? "entrada padrão: " + (a == "default on" ? "Quest 3 Microphone" : "a anterior") : "falhou (driver instalado?)";
+                if (!Resolve()) return "runtime has no oxrsys_mic_set_default (enter Play Mode)";
+                return _setDefault(a == "default on" ? 1 : 0) != 0 ? "default input: " + (a == "default on" ? "Quest 3 Microphone" : "the previous one") : "failed (is the driver installed?)";
             }
             return Status();
         }
@@ -79,22 +79,22 @@ namespace LinkParaMac.EditorTools
         {
             string devices = string.Join(", ", Microphone.devices);
             if (!TryGetStatus(out var s))
-                return $"Mic: runtime sem estado (fora do Play?). Dispositivo no Mac: {(QuestDevicePresent() ? "sim" : "NÃO — instale link-para-mac/mic-driver")}\n  entradas: {devices}";
-            string age = s.lastAgeMs < 0 ? "nunca" : $"{s.lastAgeMs:F0} ms";
-            return $"Mic do Quest: {s.packets} pacotes, último há {age}, nível {s.level:F3}, {s.sampleRate} Hz; " +
-                   $"driver {(s.driverInstalled != 0 ? "instalado" : "NÃO instalado")}, entrada padrão {(s.isDefaultInput != 0 ? "= Quest" : "≠ Quest")}\n" +
-                   $"  teste: {_testResult}\n  entradas: {devices}";
+                return $"Mic: no runtime status (outside Play?). Device on the Mac: {(QuestDevicePresent() ? "yes" : "NO — install link-para-mac/mic-driver")}\n  inputs: {devices}";
+            string age = s.lastAgeMs < 0 ? "never" : $"{s.lastAgeMs:F0} ms ago";
+            return $"Quest mic: {s.packets} packets, last {age}, level {s.level:F3}, {s.sampleRate} Hz; " +
+                   $"driver {(s.driverInstalled != 0 ? "installed" : "NOT installed")}, default input {(s.isDefaultInput != 0 ? "= Quest" : "≠ Quest")}\n" +
+                   $"  test: {_testResult}\n  inputs: {devices}";
         }
 
-        // Grava 3 s pelo Microphone do Unity no dispositivo do Quest e mede o nível (o mesmo caminho do app).
+        // Records 3 s through Unity's Microphone on the Quest device and measures the level (the same path the app uses).
         static string StartTest()
         {
-            if (!QuestDevicePresent()) return "dispositivo \"" + DeviceName + "\" não existe (instale o driver)";
-            if (_testClip != null) return "teste em andamento";
+            if (!QuestDevicePresent()) return "device \"" + DeviceName + "\" not found (install the driver)";
+            if (_testClip != null) return "test already running";
             _testClip = Microphone.Start(DeviceName, false, 3, 48000);
             _testEnd = EditorApplication.timeSinceStartup + 3.2;
-            _testResult = "gravando 3 s… fale no headset";
-            return "gravando 3 s pelo Microphone do Unity em \"" + DeviceName + "\": fale no headset (resultado em 'mic')";
+            _testResult = "recording 3 s… speak into the headset";
+            return "recording 3 s with Unity's Microphone from \"" + DeviceName + "\": speak into the headset (result in 'mic')";
         }
 
         static void Tick()
@@ -106,8 +106,8 @@ namespace LinkParaMac.EditorTools
             double sum = 0; float peak = 0;
             foreach (var v in data) { sum += v * v; peak = Mathf.Max(peak, Mathf.Abs(v)); }
             float rms = (float)Math.Sqrt(sum / Math.Max(1, data.Length));
-            _testResult = $"{data.Length} amostras, RMS {rms:F4}, pico {peak:F3} ({(peak > 0.02f ? "voz/som captado" : "silêncio")})";
-            Debug.Log("[LinkMic] teste: " + _testResult);
+            _testResult = $"{data.Length} samples, RMS {rms:F4}, peak {peak:F3} ({(peak > 0.02f ? "voice/sound captured" : "silence")})";
+            Debug.Log("[LinkMic] test: " + _testResult);
             UnityEngine.Object.DestroyImmediate(_testClip);
             _testClip = null;
         }

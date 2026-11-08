@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: painel de depuração no headset (comando "debug on|off|depth"). Desenha na cena (então aparece
-// no Quest pelo stream):
-//  - o que o YOLO viu: um raio da câmera até onde a etiqueta pousou (verde) ou até 2 m quando nada foi
-//    atingido (vermelho), com "classe nota · distância";
-//  - a profundidade real (opcional): uma grade de pontos onde o sensor do Quest vê superfícies.
-// Nada disso é do app: some ao sair do Play ou com "debug off".
+// Link para Mac: in-headset debug overlay ("debug on|off|depth" command). Draws into the scene (so it shows up
+// on the Quest through the stream):
+//  - what YOLO saw: a ray from the camera to where the label landed (green), or out to 2 m when nothing was
+//    hit (red), with "class score · distance";
+//  - real depth (optional): a grid of points where the Quest's sensor sees surfaces.
+// None of this belongs to the app: it goes away when leaving Play or with "debug off".
 using System.Collections.Generic;
 using System.Linq;
 using Meta.XR;
@@ -42,22 +42,22 @@ namespace LinkParaMac.EditorTools
         public static string Command(string arg)
         {
             string a = (arg ?? "").Trim();
-            if (!EditorApplication.isPlaying) return "só em Play Mode";
-            if (a == "off") { Teardown(true); return "painel de depuração desligado"; }
+            if (!EditorApplication.isPlaying) return "Play Mode only";
+            if (a == "off") { Teardown(true); return "debug overlay off"; }
             if (a == "on" || a == "depth" || a == "nodepth")
             {
                 Enabled = true;
                 if (a == "depth") ShowDepth = true;
                 if (a == "nodepth") ShowDepth = false;
                 Hook();
-                return $"painel de depuração ligado (raios do YOLO{(ShowDepth ? " + pontos de profundidade" : "")})";
+                return $"debug overlay on (YOLO rays{(ShowDepth ? " + depth points" : "")})";
             }
             return Status();
         }
 
         public static string Status() =>
-            $"Depuração: {(Enabled ? "ligada" : "desligada")} profundidade={(ShowDepth ? "sim" : "não")} lotes={_batches} " +
-            $"raios={_rays.Count} pontos={_dots.Count}";
+            $"Debug: {(Enabled ? "on" : "off")} depth={(ShowDepth ? "yes" : "no")} batches={_batches} " +
+            $"rays={_rays.Count} points={_dots.Count}";
 
         static void Hook()
         {
@@ -123,7 +123,7 @@ namespace LinkParaMac.EditorTools
                 Ray ray = pca.ViewportPointToRay(new Vector2(cx, 1f - cy), cam);
                 string cls = b.label ?? "?";
                 string name = cls.Contains(' ') ? cls.Substring(0, cls.LastIndexOf(' ')) : cls;
-                // A colocada mais perto do raio com a mesma classe (o source usa vários raios dentro da caixa).
+                // The placement of the same class closest to the ray (the source casts several rays inside the box).
                 Vector3? hit = null;
                 float bestAngle = 12f;
                 foreach (var p in _lastPlaced)
@@ -139,7 +139,7 @@ namespace LinkParaMac.EditorTools
                 var lr = go.AddComponent<LineRenderer>();
                 lr.sharedMaterial = _lineMat;
                 lr.positionCount = 2;
-                lr.SetPosition(0, ray.origin + ray.direction * 0.15f); // começa à frente dos olhos
+                lr.SetPosition(0, ray.origin + ray.direction * 0.15f); // starts in front of the eyes
                 lr.SetPosition(1, end);
                 lr.startWidth = 0.002f; lr.endWidth = 0.006f;
                 lr.startColor = lr.endColor = color;
@@ -156,7 +156,7 @@ namespace LinkParaMac.EditorTools
                 var tm = text.AddComponent<TextMesh>();
                 tm.font = _font;
                 tm.GetComponent<MeshRenderer>().sharedMaterial = _font.material;
-                tm.text = $"{cls} · {(hit.HasValue ? Vector3.Distance(ray.origin, end).ToString("F2") + " m" : "sem acerto")}";
+                tm.text = $"{cls} · {(hit.HasValue ? Vector3.Distance(ray.origin, end).ToString("F2") + " m" : "no hit")}";
                 tm.fontSize = 48; tm.characterSize = 0.0025f; tm.anchor = TextAnchor.LowerCenter; tm.color = color;
                 _rays.Add(go);
             }
@@ -179,7 +179,7 @@ namespace LinkParaMac.EditorTools
                 if (_dots[i].activeSelf != on) _dots[i].SetActive(on);
                 if (!on) continue;
                 _dots[i].transform.position = points[i];
-                // Tamanho que acompanha a distância: perto não vira parede de cubos, longe continua visível.
+                // Size scales with distance: up close it doesn't turn into a wall of cubes, far away it stays visible.
                 float dist = Camera.main != null ? Vector3.Distance(Camera.main.transform.position, points[i]) : 1f;
                 _dots[i].transform.localScale = Vector3.one * Mathf.Clamp(0.004f * dist, 0.002f, 0.02f);
             }

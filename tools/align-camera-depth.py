@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-# Link para Mac: mede a rotação da câmera RGB (Camera2, id 50) em relação à cabeça, alinhando as bordas
-# da profundidade do ambiente (XR_META_environment_depth, que vem na pose da visão ≈ cabeça) com a imagem
-# da câmera do mesmo instante. Resultado em graus (convenção OpenXR da visão: pitch + = pra cima,
-# yaw + = pra esquerda, roll + = anti-horário).
+# Link para Mac: measures the rotation of the RGB camera (Camera2, id 50) relative to the head by aligning the edges
+# of the environment depth (XR_META_environment_depth, which comes in the view pose ≈ head) with the camera image
+# from the same instant. Result in degrees (OpenXR view convention: pitch + = up,
+# yaw + = left, roll + = counterclockwise).
 #
-# Uso: align-camera-depth.py depth_dump.bin camera.png
-#   depth_dump.bin: o cliente grava o 5º quadro de profundidade de cada início do provider em
+# Usage: align-camera-depth.py depth_dump.bin camera.png
+#   depth_dump.bin: the client writes the 5th depth frame of each provider start to
 #     /sdcard/Android/data/net.demonixis.oxrsys.android/files/depth_dump.bin (adb pull)
-#   camera.png: comando "camera" do LinkBridge (.link/camera.png), com o headset parado
-# Medição de 2026-11-08 (2 quadros de profundidade x 2 da câmera, busca em grade): pitch≈-2 yaw≈-3 roll≈-2 (±1°)
-# → LinkCameraFeed.HeadFromCameraCalibrated. A fórmula com o LENS_POSE_ROTATION do Camera2 (-11°) pontua bem pior.
+#   camera.png: the LinkBridge "camera" command (.link/camera.png), with the headset held still
+# Measured on 2026-11-08 (2 depth frames x 2 camera frames, grid search): pitch≈-2 yaw≈-3 roll≈-2 (±1°)
+# → LinkCameraFeed.HeadFromCameraCalibrated. The formula using Camera2's LENS_POSE_ROTATION (-11°) scores much worse.
 import struct, sys
 import numpy as np
 from PIL import Image

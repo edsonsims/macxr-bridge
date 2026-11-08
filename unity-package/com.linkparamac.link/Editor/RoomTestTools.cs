@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: teste da cena (MRUK) carregada do headset pelo proxy spatial, em Play Mode.
-// Comandos: room-load | room | room-mesh | room-capture
+// Link para Mac: tests for the scene (MRUK) loaded from the headset through the spatial proxy, in Play Mode.
+// Commands: room-load | room | room-mesh | room-capture
 
 using System;
 using System.Linq;
@@ -27,8 +27,8 @@ namespace LinkParaMac.EditorTools
             {
                 var go = new GameObject("MRUK (Link para Mac)");
                 mruk = go.AddComponent<MRUK>();
-                mruk.SceneLoadedEvent.AddListener(() => Log($"SceneLoadedEvent: {mruk.Rooms.Count} sala(s)"));
-                Log("MRUK criado na cena");
+                mruk.SceneLoadedEvent.AddListener(() => Log($"SceneLoadedEvent: {mruk.Rooms.Count} room(s)"));
+                Log("MRUK created in the scene");
             }
             // Added at runtime the serialized settings object does not exist yet.
             if (mruk.SceneSettings == null) mruk.SceneSettings = new MRUK.MRUKSettings();
@@ -39,31 +39,31 @@ namespace LinkParaMac.EditorTools
 
         public static string Load(string arg)
         {
-            if (!Application.isPlaying) return "só em Play Mode";
+            if (!Application.isPlaying) return "Play Mode only";
             var mruk = Ensure();
             bool capture = arg != null && arg.Trim() == "capture";
             Log($"LoadSceneFromDevice(requestSceneCaptureIfNoDataFound={capture})…");
             var task = mruk.LoadSceneFromDevice(capture);
             task.ContinueWith(t =>
             {
-                if (t.IsFaulted) Log("LoadSceneFromDevice falhou: " + t.Exception?.GetBaseException().Message);
+                if (t.IsFaulted) Log("LoadSceneFromDevice failed: " + t.Exception?.GetBaseException().Message);
                 else Log($"LoadSceneFromDevice -> {t.Result}");
             }, System.Threading.Tasks.TaskScheduler.FromCurrentSynchronizationContext());
-            return "carregando a sala do headset… (veja 'room')";
+            return "loading the room from the headset… (see 'room')";
         }
 
         /// <summary>Low-level: fetch anchors by component (default ROOM_LAYOUT) with OVRAnchor, bypassing MRUK.</summary>
         public static string Fetch(string arg)
         {
-            if (!Application.isPlaying) return "só em Play Mode";
+            if (!Application.isPlaying) return "Play Mode only";
             var list = new System.Collections.Generic.List<OVRAnchor>();
             var options = new OVRAnchor.FetchOptions();
             string which = (arg ?? "").Trim().ToLowerInvariant();
-            if (which == "all") { /* sem filtro */ }
+            if (which == "all") { /* no filter */ }
             else if (which == "semantic") options.SingleComponentType = typeof(OVRSemanticLabels);
             else if (which == "anchors") options.SingleComponentType = typeof(OVRStorable);
             else options.SingleComponentType = typeof(OVRRoomLayout);
-            Log($"FetchAnchorsAsync({(options.SingleComponentType != null ? options.SingleComponentType.Name : "sem filtro")})…");
+            Log($"FetchAnchorsAsync({(options.SingleComponentType != null ? options.SingleComponentType.Name : "no filter")})…");
             OVRAnchor.FetchAnchorsAsync(list, options).ContinueWith(result =>
             {
                 Log($"FetchAnchorsAsync -> Success={result.Success} Status={result.Status} count={list.Count}");
@@ -79,55 +79,55 @@ namespace LinkParaMac.EditorTools
                     Log($"  {a.Uuid}{extra}");
                 }
             });
-            return "buscando âncoras no headset… (veja 'room')";
+            return "fetching anchors from the headset… (see 'room')";
         }
 
         public static string Capture()
         {
-            if (!Application.isPlaying) return "só em Play Mode";
+            if (!Application.isPlaying) return "Play Mode only";
             var task = OVRScene.RequestSpaceSetup();
             task.ContinueWith(ok => Log($"RequestSpaceSetup -> {ok}"));
-            return "Space Setup pedido no headset…";
+            return "Space Setup requested on the headset…";
         }
 
         public static string Describe()
         {
             var sb = new StringBuilder();
             var mruk = MRUK.Instance;
-            if (mruk == null) sb.AppendLine("MRUK ausente (use room-load)");
+            if (mruk == null) sb.AppendLine("MRUK missing (use room-load)");
             else
             {
-                sb.AppendLine($"MRUK: {mruk.Rooms.Count} sala(s), IsWorldLockActive={mruk.IsWorldLockActive}");
+                sb.AppendLine($"MRUK: {mruk.Rooms.Count} room(s), IsWorldLockActive={mruk.IsWorldLockActive}");
                 foreach (var room in mruk.Rooms)
                 {
-                    sb.AppendLine($"  Sala {room.name}: {room.Anchors.Count} âncoras, paredes={room.WallAnchors.Count}, chão={(room.FloorAnchor != null ? "sim" : "não")}, globalMesh={(room.GlobalMeshAnchor != null ? "sim" : "não")}");
+                    sb.AppendLine($"  Room {room.name}: {room.Anchors.Count} anchors, walls={room.WallAnchors.Count}, floor={(room.FloorAnchor != null ? "yes" : "no")}, globalMesh={(room.GlobalMeshAnchor != null ? "yes" : "no")}");
                     foreach (var a in room.Anchors.Take(40))
                     {
-                        string shape = a.VolumeBounds.HasValue ? $"vol={a.VolumeBounds.Value.size}" : a.PlaneRect.HasValue ? $"plane={a.PlaneRect.Value.size} boundary={a.PlaneBoundary2D.Count}" : "sem geometria";
+                        string shape = a.VolumeBounds.HasValue ? $"vol={a.VolumeBounds.Value.size}" : a.PlaneRect.HasValue ? $"plane={a.PlaneRect.Value.size} boundary={a.PlaneBoundary2D.Count}" : "no geometry";
                         sb.AppendLine($"    {string.Join("|", a.AnchorLabels)} pos={a.transform.position} rot={a.transform.rotation.eulerAngles} {shape}");
                     }
                 }
             }
-            sb.Append("Eventos:\n").Append(Events);
+            sb.Append("Events:\n").Append(Events);
             return sb.ToString();
         }
 
-        /// <summary>Desenha caixas/quads nas âncoras da sala pra ver o cômodo real no passthrough.</summary>
-        // Mantém o material PADRÃO do primitivo (sempre compatível com o render pipeline ativo)
-        // e só troca a cor — criar um Material novo com Shader.Find dava magenta (shader errado).
+        /// <summary>Draws boxes/quads on the room anchors to see the real room in passthrough.</summary>
+        // Keeps the primitive's DEFAULT material (always compatible with the active render pipeline)
+        // and only changes the color — creating a new Material with Shader.Find came out magenta (wrong shader).
         static void Tint(GameObject go, Color color)
         {
             var r = go.GetComponent<Renderer>();
-            var mat = r.material; // instância do material padrão do primitivo
+            var mat = r.material; // instance of the primitive's default material
             mat.color = color;
             if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", color);
         }
 
         public static string Draw()
         {
-            if (!Application.isPlaying) return "só em Play Mode";
+            if (!Application.isPlaying) return "Play Mode only";
             var mruk = MRUK.Instance;
-            if (mruk == null || mruk.Rooms.Count == 0) return "sem sala (room-load primeiro)";
+            if (mruk == null || mruk.Rooms.Count == 0) return "no room (run room-load first)";
             var parent = new GameObject("Room draw (Link para Mac)");
             int planes = 0, volumes = 0;
             foreach (var room in mruk.Rooms)
@@ -140,7 +140,7 @@ namespace LinkParaMac.EditorTools
                         var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
                         go.name = $"Vol {string.Join("|", a.AnchorLabels)}";
                         go.transform.SetParent(parent.transform, false);
-                        // VolumeBounds é local à âncora; o centro e o tamanho vêm do bounds.
+                        // VolumeBounds is local to the anchor; the center and size come from the bounds.
                         go.transform.SetPositionAndRotation(a.transform.TransformPoint(b.center), a.transform.rotation);
                         go.transform.localScale = b.size;
                         Tint(go, new Color(1f, 0.5f, 0f, 1f));
@@ -149,7 +149,7 @@ namespace LinkParaMac.EditorTools
                     else if (a.PlaneRect.HasValue)
                     {
                         var rect = a.PlaneRect.Value;
-                        // Caixa fina (3 cm) em vez de quad de uma face: visível pelos dois lados.
+                        // Thin box (3 cm) instead of a single-sided quad: visible from both sides.
                         var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
                         go.name = $"Plane {string.Join("|", a.AnchorLabels)}";
                         go.transform.SetParent(parent.transform, false);
@@ -160,28 +160,28 @@ namespace LinkParaMac.EditorTools
                     }
                 }
             }
-            return $"desenhei {planes} planos (azul) e {volumes} volumes (laranja) da sua sala";
+            return $"drew {planes} planes (blue) and {volumes} volumes (orange) of your room";
         }
 
         public static string Mesh()
         {
-            if (!Application.isPlaying) return "só em Play Mode";
+            if (!Application.isPlaying) return "Play Mode only";
             var mruk = MRUK.Instance;
-            if (mruk == null || mruk.Rooms.Count == 0) return "sem sala (room-load primeiro)";
+            if (mruk == null || mruk.Rooms.Count == 0) return "no room (run room-load first)";
             var anchor = mruk.Rooms[0].GlobalMeshAnchor;
-            if (anchor == null) return "a sala não tem GLOBAL_MESH";
+            if (anchor == null) return "the room has no GLOBAL_MESH";
             var mesh = anchor.LoadGlobalMeshTriangles();
-            if (mesh == null) return "LoadGlobalMeshTriangles devolveu null";
+            if (mesh == null) return "LoadGlobalMeshTriangles returned null";
             var go = new GameObject("GlobalMesh (Link para Mac)");
             go.transform.SetPositionAndRotation(anchor.transform.position, anchor.transform.rotation);
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
-            // Pega o material padrão de um primitivo pra ter um shader válido do pipeline.
+            // Grab a primitive's default material to get a valid shader for the pipeline.
             var probe = GameObject.CreatePrimitive(PrimitiveType.Cube);
             var defaultMat = probe.GetComponent<Renderer>().sharedMaterial;
             UnityEngine.Object.Destroy(probe);
             go.AddComponent<MeshRenderer>().material = new Material(defaultMat);
             Tint(go, new Color(0f, 1f, 0.6f, 1f));
-            return $"malha global: {mesh.vertexCount} vértices, {mesh.triangles.Length / 3} triângulos (renderizada em verde)";
+            return $"global mesh: {mesh.vertexCount} vertices, {mesh.triangles.Length / 3} triangles (rendered in green)";
         }
     }
 }

@@ -1,12 +1,12 @@
 # unity-tools
 
-Scripts Unity do Link para Mac. Copie para `Assets/LinkParaMac/` do projeto.
+Link para Mac Unity scripts. Copy them into the project's `Assets/LinkParaMac/`.
 
-- `RoomJsonExporter.cs` — no headset, salva a sala real do MRUK em `room.json` (persistentDataPath).
-  Puxe com `scripts/70-pull-room-json.sh <package name>` e, no Editor, configure o componente MRUK:
+- `RoomJsonExporter.cs` — on the headset, saves the real MRUK room to `room.json` (persistentDataPath).
+  Pull it with `scripts/70-pull-room-json.sh <package name>` and, in the Editor, set up the MRUK component:
   Scene Settings → Data Source = **Device With Json Fallback** → Scene Jsons = `room.json`.
-  Assim, no Mac (onde o runtime ainda não entrega a cena), o Editor usa a sua sala de verdade.
+  That way, on the Mac (where the runtime doesn't deliver the scene yet), the Editor uses your actual room.
 
-Planejado (Fase 1):
-- `PassthroughCameraSource` — fonte de quadros trocável para o Editor (webcam do Mac ou quadros gravados no Quest),
-  para o pipeline de detecção de objetos rodar no Mac até o relay da câmera existir.
+Planned (Phase 1):
+- `PassthroughCameraSource` — swappable frame source for the Editor (the Mac's webcam or frames recorded on the Quest),
+  so the object detection pipeline can run on the Mac until the camera relay exists.

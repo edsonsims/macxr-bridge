@@ -1,7 +1,7 @@
-// Link para Mac — exporta a sala real (MRUK) para JSON no headset.
-// Coloque este componente em qualquer GameObject da cena que tem o MRUK, faça o build para o Quest,
-// abra o app uma vez e depois rode scripts/70-pull-room-json.sh <package name>.
-// No Mac, o MRUK carrega esse JSON no Editor (Data Source = Device With Json Fallback).
+// Link para Mac — exports the real room (MRUK) to JSON on the headset.
+// Put this component on any GameObject in the scene that has MRUK, build for the Quest,
+// open the app once and then run scripts/70-pull-room-json.sh <package name>.
+// On the Mac, MRUK loads that JSON in the Editor (Data Source = Device With Json Fallback).
 using System.IO;
 using UnityEngine;
 using Meta.XR.MRUtilityKit;
@@ -10,13 +10,13 @@ namespace LinkParaMac
 {
     public class RoomJsonExporter : MonoBehaviour
     {
-        [Tooltip("Nome do arquivo em Application.persistentDataPath")]
+        [Tooltip("File name in Application.persistentDataPath")]
         public string fileName = "room.json";
 
-        [Tooltip("Exporta automaticamente quando o MRUK termina de carregar a sala")]
+        [Tooltip("Exports automatically when MRUK finishes loading the room")]
         public bool exportOnSceneLoaded = true;
 
-        [Tooltip("Inclui a malha global do cômodo (arquivo bem maior; útil para oclusão)")]
+        [Tooltip("Includes the room's global mesh (much larger file; useful for occlusion)")]
         public bool includeGlobalMesh = false;
 
         void Start()
@@ -24,18 +24,18 @@ namespace LinkParaMac
             if (!exportOnSceneLoaded) return;
             if (MRUK.Instance == null)
             {
-                Debug.LogWarning("[LinkParaMac] MRUK não encontrado na cena.");
+                Debug.LogWarning("[LinkParaMac] MRUK not found in the scene.");
                 return;
             }
             MRUK.Instance.RegisterSceneLoadedCallback(Export);
         }
 
-        [ContextMenu("Exportar sala agora")]
+        [ContextMenu("Export room now")]
         public void Export()
         {
             if (MRUK.Instance == null)
             {
-                Debug.LogWarning("[LinkParaMac] MRUK não encontrado na cena.");
+                Debug.LogWarning("[LinkParaMac] MRUK not found in the scene.");
                 return;
             }
 
@@ -43,8 +43,8 @@ namespace LinkParaMac
                 SerializationHelpers.CoordinateSystem.Unity, includeGlobalMesh);
             string path = Path.Combine(Application.persistentDataPath, fileName);
             File.WriteAllText(path, json);
-            Debug.Log($"[LinkParaMac] Sala exportada para {path} ({json.Length} caracteres). " +
-                      "No Mac: scripts/70-pull-room-json.sh <package name>");
+            Debug.Log($"[LinkParaMac] Room exported to {path} ({json.Length} characters). " +
+                      "On the Mac: scripts/70-pull-room-json.sh <package name>");
         }
     }
 }

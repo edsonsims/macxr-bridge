@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: gravação de realidade mista no Mac (comando "record start [nome] [nomic]" / "record stop").
-// Vídeo: a imagem do LinkComposite (câmera real do Quest 1280x960 + app na pose/intrínsecos da câmera) por um pipe
-// pro ffmpeg (h264 por hardware). Som: o do app (LinkAudioTap) + a sua voz pelo microfone do headset (runtime),
-// misturados no fim. Arquivo em <projeto>/Recordings/. O Quest Link do Windows não acessa a câmera do headset.
+// Link para Mac: mixed reality recording on the Mac ("record start [name] [nomic]" / "record stop" commands).
+// Video: the LinkComposite image (real Quest camera 1280x960 + app at the camera's pose/intrinsics) piped
+// to ffmpeg (hardware h264). Sound: the app's (LinkAudioTap) + your voice from the headset microphone (runtime),
+// mixed at the end. File in <project>/Recordings/. Quest Link on Windows can't access the headset camera.
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -92,15 +92,15 @@ namespace LinkParaMac.EditorTools
         }
 
         public static string Status() => Recording
-            ? $"Gravando há {Seconds:F0}s: {_written} quadros ({_dropped} descartados){(_withMic ? " + sua voz" : "")} → {_finalPath}"
-            : "Gravação: parada. Última: " + _lastResult;
+            ? $"Recording for {Seconds:F0}s: {_written} frames ({_dropped} dropped){(_withMic ? " + your voice" : "")} → {_finalPath}"
+            : "Recording: stopped. Last: " + _lastResult;
 
         public static string Start(string name, bool withMic = true)
         {
             if (Recording) return Status();
-            if (!EditorApplication.isPlaying) return "só em Play Mode";
-            if (!File.Exists(Ffmpeg)) return "ffmpeg não encontrado em " + Ffmpeg + " (brew install ffmpeg)";
-            if (!LinkCameraSource.TryGetLatestTexture(out var tex, out _)) return "a câmera do Quest ainda não chegou (espere a detecção real ligar)";
+            if (!EditorApplication.isPlaying) return "Play Mode only";
+            if (!File.Exists(Ffmpeg)) return "ffmpeg not found at " + Ffmpeg + " (brew install ffmpeg)";
+            if (!LinkCameraSource.TryGetLatestTexture(out var tex, out _)) return "the Quest camera hasn't arrived yet (wait for real detection to turn on)";
             _w = tex.width; _h = tex.height;
 
             string dir = Path.Combine(Directory.GetCurrentDirectory(), "Recordings");
@@ -114,7 +114,7 @@ namespace LinkParaMac.EditorTools
             _ffmpegLog = Path.Combine(dir, baseName + ".ffmpeg.log");
 
             var psi = new ProcessStartInfo(Ffmpeg,
-                // Carimbo de tempo = chegada no ffmpeg: o vídeo segue o relógio real e casa com o áudio gravado.
+                // Timestamp = arrival at ffmpeg: the video follows the wall clock and lines up with the recorded audio.
                 $"-y -loglevel error -use_wallclock_as_timestamps 1 -f rawvideo -pix_fmt rgba -s {_w}x{_h} -i - " +
                 $"-vf vflip -fps_mode cfr -r 30 -c:v h264_videotoolbox -b:v 16M -pix_fmt yuv420p \"{_videoPath}\"")
             {
@@ -141,7 +141,7 @@ namespace LinkParaMac.EditorTools
             _mic = null;
             if (withMic)
             {
-                while (LinkNative.MicPull(_micBuffer, out _) > 0) { } // descarta o que estava no anel: começa agora
+                while (LinkNative.MicPull(_micBuffer, out _) > 0) { } // drop what was in the ring buffer: start from now
                 _mic = new Wav(_micPath, 48000) { Channels = 1 };
             }
 
@@ -150,8 +150,8 @@ namespace LinkParaMac.EditorTools
             Recording = true;
             LinkComposite.Composited += OnComposited;
             LinkComposite.AddUser();
-            Debug.Log($"[LinkRecorder] gravando {_w}x{_h} → {_finalPath}");
-            return $"gravando {_w}x{_h} a 30 fps (câmera real + app + som do app{(withMic ? " + sua voz" : "")}) → {_finalPath}";
+            Debug.Log($"[LinkRecorder] recording {_w}x{_h} → {_finalPath}");
+            return $"recording {_w}x{_h} at 30 fps (real camera + app + app audio{(withMic ? " + your voice" : "")}) → {_finalPath}";
         }
 
         static void OnComposited(RenderTexture rt, LinkCameraSource.FrameInfo info)
@@ -204,7 +204,7 @@ namespace LinkParaMac.EditorTools
             _ffmpeg.WaitForExit(15000);
             double seconds = EditorApplication.timeSinceStartup - _startTime;
 
-            // Junta vídeo + som do app + voz (o áudio começa junto com o vídeo; -shortest corta a sobra).
+            // Mux video + app audio + voice (the audio starts together with the video; -shortest trims the excess).
             bool hasApp = _app.Samples > 0, hasMic = _mic != null && _mic.Samples > 0;
             string result;
             if (File.Exists(_videoPath) && (hasApp || hasMic))
@@ -218,16 +218,16 @@ namespace LinkParaMac.EditorTools
                     { UseShellExecute = false, CreateNoWindow = true });
                 mux.WaitForExit(60000);
                 if (File.Exists(_finalPath)) { File.Delete(_videoPath); File.Delete(_audioPath); if (File.Exists(_micPath)) File.Delete(_micPath); }
-                result = _finalPath + (hasMic ? " (com a sua voz)" : "");
+                result = _finalPath + (hasMic ? " (with your voice)" : "");
             }
             else
             {
                 if (File.Exists(_videoPath)) File.Move(_videoPath, _finalPath);
-                result = _finalPath + " (sem áudio)";
+                result = _finalPath + " (no audio)";
             }
-            _lastResult = $"{result} — {seconds:F0}s, {_written} quadros, {_dropped} descartados";
+            _lastResult = $"{result} — {seconds:F0}s, {_written} frames, {_dropped} dropped";
             Debug.Log("[LinkRecorder] " + _lastResult);
-            return "gravação salva: " + _lastResult;
+            return "recording saved: " + _lastResult;
         }
     }
 }

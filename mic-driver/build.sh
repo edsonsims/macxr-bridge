@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Compila o driver "Quest 3 Microphone" (QuestMic.driver) nesta pasta. Instalar: install.sh (pede a senha do Mac).
+# Builds the "Quest 3 Microphone" driver (QuestMic.driver) in this folder. To install: install.sh (asks for the Mac password).
 set -euo pipefail
 cd "$(dirname "$0")"
 rm -rf build/QuestMic.driver

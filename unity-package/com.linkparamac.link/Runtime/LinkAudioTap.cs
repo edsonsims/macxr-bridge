@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: o som do app sai no fone do Quest, como no Quest Link. Fica no mesmo GameObject do
-// AudioListener e recebe a mixagem final (OnAudioFilterRead); manda pro runtime OXRSys
-// (oxrsys_audio_push), que repassa ao headset pelo canal da câmera. Enquanto o headset recebe, o Mac fica
-// mudo (EditorPrefs "LinkParaMac.AudioToMac" = true toca nos dois).
+// Link para Mac: the app's sound plays in the Quest headset, as with Quest Link. Lives on the same GameObject as the
+// AudioListener and receives the final mix (OnAudioFilterRead); sends it to the OXRSys runtime
+// (oxrsys_audio_push), which relays it to the headset over the camera channel. While the headset is receiving, the
+// Mac stays muted (EditorPrefs "LinkParaMac.AudioToMac" = true plays on both).
 #if UNITY_EDITOR
 using System;
 using System.Runtime.InteropServices;
@@ -23,7 +23,7 @@ namespace LinkParaMac
         public static volatile int Callbacks;
         public static volatile int SentCallbacks;
         public static bool AlsoPlayOnMac;
-        // Gravação de realidade mista (LinkRecorder): cópias da mixagem enquanto não for null.
+        // Mixed reality recording (LinkRecorder): copies of the mix while this is not null.
         public static System.Collections.Concurrent.ConcurrentQueue<float[]> RecordQueue;
         public static volatile int LastChannels;
         int _sampleRate;
@@ -31,7 +31,7 @@ namespace LinkParaMac
         public static bool Resolve()
         {
             if (_resolved) return true;
-            IntPtr p = dlsym(RTLD_DEFAULT, "oxrsys_audio_push"); // o runtime só carrega no Play: não guardar a falha
+            IntPtr p = dlsym(RTLD_DEFAULT, "oxrsys_audio_push"); // the runtime only loads in Play: don't cache the failure
             if (p == IntPtr.Zero) return false;
             _resolved = true;
             _push = Marshal.GetDelegateForFunctionPointer<PushDelegate>(p);
@@ -40,7 +40,7 @@ namespace LinkParaMac
 
         void Awake()
         {
-            _sampleRate = AudioSettings.outputSampleRate; // só pode ser lido na thread principal
+            _sampleRate = AudioSettings.outputSampleRate; // can only be read on the main thread
             AlsoPlayOnMac = UnityEditor.EditorPrefs.GetBool("LinkParaMac.AudioToMac", false);
             Callbacks = SentCallbacks = 0;
             TryResolve();
@@ -48,7 +48,7 @@ namespace LinkParaMac
 
         float _nextResolve;
 
-        // O runtime OpenXR pode ainda não ter exportado os símbolos no primeiro frame: tenta de novo a cada segundo.
+        // The OpenXR runtime may not have exported the symbols yet on the first frame: retry every second.
         void Update()
         {
             if (_push != null || Time.unscaledTime < _nextResolve) return;
@@ -59,7 +59,7 @@ namespace LinkParaMac
         void TryResolve()
         {
             if (!Resolve()) return;
-            Debug.Log($"[LinkAudio] som do app vai pro headset ({_sampleRate} Hz); Mac {(AlsoPlayOnMac ? "também toca" : "fica mudo enquanto o headset recebe")}");
+            Debug.Log($"[LinkAudio] app audio goes to the headset ({_sampleRate} Hz); Mac {(AlsoPlayOnMac ? "plays too" : "stays muted while the headset receives")}");
             enabled = true;
         }
 
@@ -77,11 +77,11 @@ namespace LinkParaMac
             if (!AlsoPlayOnMac) Array.Clear(data, 0, data.Length);
         }
 
-        /// <summary>Bipe de teste (880 Hz, 0,4 s) tocado pelo app: confere o som no headset e nas gravações.</summary>
+        /// <summary>Test beep (880 Hz, 0.4 s) played by the app: checks the sound in the headset and in recordings.</summary>
         public static string Beep()
         {
             var listener = FindAnyObjectByType<AudioListener>();
-            if (listener == null) return "sem AudioListener na cena";
+            if (listener == null) return "no AudioListener in the scene";
             int rate = AudioSettings.outputSampleRate, n = rate * 2 / 5;
             var samples = new float[n];
             int fade = rate / 100;
@@ -92,7 +92,7 @@ namespace LinkParaMac
             }
             var clip = AudioClip.Create("Link beep", n, 1, rate, false);
             clip.SetData(samples, 0);
-            // GameObject próprio: uma AudioSource no mesmo objeto do listener pegaria o OnAudioFilterRead só pra ela.
+            // Separate GameObject: an AudioSource on the listener's object would get OnAudioFilterRead for itself only.
             var go = new GameObject("Link beep");
             go.transform.position = listener.transform.position;
             var src = go.AddComponent<AudioSource>();
@@ -100,15 +100,15 @@ namespace LinkParaMac
             src.clip = clip;
             src.Play();
             Destroy(go, 1f);
-            return "bipe 880 Hz 0,4 s (" + (HeadsetAttached ? "indo pro headset" : "headset não recebe áudio agora") + ")";
+            return "beep 880 Hz 0.4 s (" + (HeadsetAttached ? "going to the headset" : "headset isn't receiving audio right now") + ")";
         }
 
         public static string Status()
         {
-            if (!Resolve()) return "Áudio: runtime sem oxrsys_audio_push (recompile o runtime e reinicie o Unity)";
+            if (!Resolve()) return "Audio: runtime has no oxrsys_audio_push (rebuild the runtime and restart Unity)";
             var tap = FindAnyObjectByType<LinkAudioTap>();
-            return $"Áudio: tap={(tap != null ? tap.gameObject.name : "ausente")} headset={(HeadsetAttached ? "recebendo" : "não conectado")} " +
-                   $"blocos={Callbacks} enviados={SentCallbacks} Mac={(AlsoPlayOnMac ? "também toca" : "mudo")}";
+            return $"Audio: tap={(tap != null ? tap.gameObject.name : "missing")} headset={(HeadsetAttached ? "receiving" : "not connected")} " +
+                   $"blocks={Callbacks} sent={SentCallbacks} Mac={(AlsoPlayOnMac ? "plays too" : "muted")}";
         }
     }
 }

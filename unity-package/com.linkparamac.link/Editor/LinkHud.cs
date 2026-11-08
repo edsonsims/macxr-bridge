@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: painel de desempenho preso à cabeça (comando "hud on|off"; também no painel do Unity).
-// Mostra o caminho todo: transporte, taxa de bits e latência do stream (runtime_status.json do runtime), o que o
-// headset diz dele mesmo (fps, bateria, temperatura — mensagem Stats do cliente), o Unity no Mac e os canais do
-// Link (câmera, profundidade, microfone). Lembrete na tela: o fps do Unity aqui é do Mac, não do Quest.
+// Link para Mac: head-locked performance HUD ("hud on|off" command; also in the Unity panel).
+// Shows the whole path: stream transport, bitrate and latency (the runtime's runtime_status.json), what the
+// headset reports about itself (fps, battery, temperature — the client's Stats message), Unity on the Mac and the
+// Link channels (camera, depth, microphone). On-screen reminder: the Unity fps here is the Mac's, not the Quest's.
 using System;
 using System.Globalization;
 using System.IO;
@@ -39,8 +39,8 @@ namespace LinkParaMac.EditorTools
         public static string Command(string arg)
         {
             string a = (arg ?? "").Trim();
-            if (a == "on") { if (!EditorApplication.isPlaying) return "só em Play Mode"; Visible = true; return "HUD ligado (no headset, embaixo da visão)"; }
-            if (a == "off") { Hide(); return "HUD desligado"; }
+            if (a == "on") { if (!EditorApplication.isPlaying) return "Play Mode only"; Visible = true; return "HUD on (in the headset, below your view)"; }
+            if (a == "off") { Hide(); return "HUD off"; }
             Refresh();
             return Text;
         }
@@ -101,24 +101,24 @@ namespace LinkParaMac.EditorTools
             }
             var sb = new StringBuilder();
             string transport = Str("transport");
-            transport = transport == "usb_adb" ? "USB" : transport == "wifi" ? "Wi-Fi" : transport == "usb_ncm" ? "USB (rede)" : transport == "" ? "desconectado" : transport;
+            transport = transport == "usb_adb" ? "USB" : transport == "wifi" ? "Wi-Fi" : transport == "usb_ncm" ? "USB (network)" : transport == "" ? "disconnected" : transport;
             sb.AppendLine($"LINK PARA MAC   {transport} · {F(Num("refresh_rate_hz"), "0")} Hz · {F(Num("current_bitrate_mbps"), "0")} Mb/s · {Str("video_codec")}");
-            sb.AppendLine($"Latência  Mac {F(Num("server_pipeline"), "0")} ms + Quest {F(Num("client_pipeline"), "0")} ms · decodificação {F(Num("client_decode"), "0.0")} ms · codificação {F(Num("total_avg"), "0.0")} ms");
+            sb.AppendLine($"Latency   Mac {F(Num("server_pipeline"), "0")} ms + Quest {F(Num("client_pipeline"), "0")} ms · decode {F(Num("client_decode"), "0.0")} ms · encode {F(Num("total_avg"), "0.0")} ms");
             if (LinkNative.TryGetClientStats(out var cs, out float age) && age < 5f)
             {
-                string battery = cs.batteryPercent >= 0 ? $"{cs.batteryPercent:0}%{(cs.charging != 0 ? " (carregando)" : "")}" : "–";
+                string battery = cs.batteryPercent >= 0 ? $"{cs.batteryPercent:0}%{(cs.charging != 0 ? " (charging)" : "")}" : "–";
                 string temp = cs.batteryTemperatureC > -100 ? $"{cs.batteryTemperatureC:0} °C" : "–";
-                sb.AppendLine($"Headset   {cs.displayFps:0} fps · vídeo {cs.videoFps:0} fps · bateria {battery} · {temp}");
+                sb.AppendLine($"Headset   {cs.displayFps:0} fps · video {cs.videoFps:0} fps · battery {battery} · {temp}");
             }
-            else sb.AppendLine("Headset   (sem dados do cliente — app do Quest antigo ou desconectado)");
-            sb.AppendLine($"Unity     {1f / _dtAvg:0} fps ({_dtAvg * 1000f:0.0} ms)  ← no Mac, não é o desempenho do Quest");
+            else sb.AppendLine("Headset   (no client data — old Quest app or disconnected)");
+            sb.AppendLine($"Unity     {1f / _dtAvg:0} fps ({_dtAvg * 1000f:0.0} ms)  ← on the Mac, not Quest performance");
             string mic = "–";
             if (LinkMic.TryGetStatus(out var ms) && ms.lastAgeMs >= 0 && ms.lastAgeMs < 1000)
                 mic = new string('|', Mathf.Clamp(Mathf.RoundToInt(ms.level * 60f), 0, 10)).PadRight(10, '.');
-            sb.Append($"Câmera    {_camFps:0} fps · profundidade {_depthHz:0} Hz · mic [{mic}]");
-            if (LinkSession.Replaying) sb.Append($"\nREPETINDO {LinkSession.ReplayName} {LinkSession.CurrentTime:0.0}/{LinkSession.Duration:0.0} s{(LinkSession.Paused ? " (pausada)" : "")}");
-            if (LinkSession.Recording) sb.Append($"\n● GRAVANDO SESSÃO {LinkSession.RecordingSeconds:0} s");
-            if (LinkRecorder.Recording) sb.Append($"\n● GRAVANDO VÍDEO {LinkRecorder.Seconds:0} s");
+            sb.Append($"Camera    {_camFps:0} fps · depth {_depthHz:0} Hz · mic [{mic}]");
+            if (LinkSession.Replaying) sb.Append($"\nREPLAYING {LinkSession.ReplayName} {LinkSession.CurrentTime:0.0}/{LinkSession.Duration:0.0} s{(LinkSession.Paused ? " (paused)" : "")}");
+            if (LinkSession.Recording) sb.Append($"\n● RECORDING SESSION {LinkSession.RecordingSeconds:0} s");
+            if (LinkRecorder.Recording) sb.Append($"\n● RECORDING VIDEO {LinkRecorder.Seconds:0} s");
             Text = sb.ToString();
         }
 
@@ -132,13 +132,13 @@ namespace LinkParaMac.EditorTools
                 _root = new GameObject("Link HUD (Editor)");
                 var bg = GameObject.CreatePrimitive(PrimitiveType.Quad);
                 UnityEngine.Object.Destroy(bg.GetComponent<Collider>());
-                bg.name = "fundo";
+                bg.name = "background";
                 bg.transform.SetParent(_root.transform, false);
                 bg.transform.localPosition = new Vector3(0, 0, 0.002f);
                 bg.transform.localScale = new Vector3(0.62f, 0.17f, 1f);
                 var mat = new Material(Shader.Find("Sprites/Default")) { color = new Color(0f, 0f, 0f, 0.65f) };
                 bg.GetComponent<Renderer>().sharedMaterial = mat;
-                var textGo = new GameObject("texto");
+                var textGo = new GameObject("text");
                 textGo.transform.SetParent(_root.transform, false);
                 _text = textGo.AddComponent<TextMesh>();
                 var font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");

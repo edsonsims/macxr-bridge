@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Compila o runtime OpenXR (dylib + encoder helper + manifest). Use --test para rodar o ctest.
+# Builds the OpenXR runtime (dylib + encoder helper + manifest). Use --test to run ctest.
 set -euo pipefail
 source "$(dirname "${(%):-%x}")/common.sh"
 
@@ -9,7 +9,7 @@ cmake --preset "${OXR_PRESET}"
 cmake --build "${OXR_BUILD_DIR}"
 if [[ "${1:-}" == "--test" ]]; then ctest --test-dir "${OXR_BUILD_DIR}" --output-on-failure; fi
 
-[[ -f "${OXR_MANIFEST}" ]] || { fail "manifest não gerado: ${OXR_MANIFEST}"; exit 1; }
+[[ -f "${OXR_MANIFEST}" ]] || { fail "manifest not generated: ${OXR_MANIFEST}"; exit 1; }
 ok "Runtime: ${OXR_BUILD_DIR}/runtime/liboxrsys-runtime.dylib"
 ok "Manifest: ${OXR_MANIFEST}"
-lipo -archs "${OXR_BUILD_DIR}/runtime/liboxrsys-runtime.dylib" | sed 's/^/   arquiteturas: /'
+lipo -archs "${OXR_BUILD_DIR}/runtime/liboxrsys-runtime.dylib" | sed 's/^/   architectures: /'

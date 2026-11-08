@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Faz tudo em ordem: runtime → Home → cliente Quest → instalar no Quest → registrar runtime.
+# Does everything in order: runtime → Home → Quest client → install on the Quest → register the runtime.
 set -euo pipefail
 here="$(dirname "${(%):-%x}")"
 zsh "$here/00-check-prereqs.sh"
@@ -9,4 +9,4 @@ zsh "$here/30-build-quest-client.sh"
 zsh "$here/40-install-quest.sh"
 zsh "$here/50-configure-runtime.sh"
 print
-print "Pronto. Abra o OXRSys Home (20-build-home.sh mostra o caminho), ligue o cliente no Quest e dê Play no Unity."
+print "Done. Open OXRSys Home (20-build-home.sh shows the path), start the client on the Quest and press Play in Unity."

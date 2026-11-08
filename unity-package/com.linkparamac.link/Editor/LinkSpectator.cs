@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: espectador ao vivo da realidade mista (o que a câmera do Quest vê + o app por cima).
-//  - Janela "Window > Link para Mac > Espectador" (capturável no OBS como janela);
-//  - "stream on [porta]" serve um MJPEG na rede local: http://<ip-do-mac>:8765/ abre num navegador, num celular,
-//    numa TV ou como "Browser/Media Source" no OBS — pra mostrar o app ao vivo pra quem está na sala.
+// Link para Mac: live mixed reality spectator (what the Quest camera sees + the app on top).
+//  - "Window > Link para Mac > Spectator" window (can be captured in OBS as a window);
+//  - "stream on [port]" serves an MJPEG stream on the local network: http://<mac-ip>:8765/ opens in a browser, on a
+//    phone, on a TV or as a "Browser/Media Source" in OBS, to show the app live to people in the room.
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -22,8 +22,8 @@ namespace LinkParaMac.EditorTools
 {
     public class LinkSpectatorWindow : EditorWindow
     {
-        [MenuItem("Window/Link para Mac/Espectador (realidade mista)")]
-        public static void Open() => GetWindow<LinkSpectatorWindow>("Link: Espectador");
+        [MenuItem("Window/Link para Mac/Spectator (Mixed Reality)")]
+        public static void Open() => GetWindow<LinkSpectatorWindow>("Link: Spectator");
 
         void OnEnable()
         {
@@ -45,13 +45,13 @@ namespace LinkParaMac.EditorTools
             {
                 if (LinkStream.Running)
                 {
-                    GUILayout.Label("Na rede: " + LinkStream.Url + $"  ({LinkStream.Clients} assistindo)", EditorStyles.miniLabel);
-                    if (GUILayout.Button("Parar stream", EditorStyles.toolbarButton, GUILayout.Width(90))) LinkStream.Stop();
+                    GUILayout.Label("On the network: " + LinkStream.Url + $"  ({LinkStream.Clients} watching)", EditorStyles.miniLabel);
+                    if (GUILayout.Button("Stop stream", EditorStyles.toolbarButton, GUILayout.Width(90))) LinkStream.Stop();
                 }
-                else if (GUILayout.Button("Transmitir na rede local", EditorStyles.toolbarButton, GUILayout.Width(150))) LinkStream.Start(LinkStream.DefaultPort);
+                else if (GUILayout.Button("Stream on local network", EditorStyles.toolbarButton, GUILayout.Width(150))) LinkStream.Start(LinkStream.DefaultPort);
                 GUILayout.FlexibleSpace();
-                if (!LinkRecorder.Recording && GUILayout.Button("Gravar", EditorStyles.toolbarButton, GUILayout.Width(60))) LinkRecorder.Start("");
-                if (LinkRecorder.Recording && GUILayout.Button($"Parar ({LinkRecorder.Seconds:F0}s)", EditorStyles.toolbarButton, GUILayout.Width(90))) LinkRecorder.Stop();
+                if (!LinkRecorder.Recording && GUILayout.Button("Record", EditorStyles.toolbarButton, GUILayout.Width(60))) LinkRecorder.Start("");
+                if (LinkRecorder.Recording && GUILayout.Button($"Stop ({LinkRecorder.Seconds:F0}s)", EditorStyles.toolbarButton, GUILayout.Width(90))) LinkRecorder.Stop();
             }
             var rt = LinkComposite.Output;
             Rect area = new Rect(0, EditorGUIUtility.singleLineHeight + 2, position.width, position.height - EditorGUIUtility.singleLineHeight - 2);
@@ -59,7 +59,7 @@ namespace LinkParaMac.EditorTools
             {
                 EditorGUI.DrawRect(area, Color.black);
                 GUI.Label(new Rect(area.x + 10, area.y + 10, area.width - 20, 40),
-                    EditorApplication.isPlaying ? "Esperando a câmera do Quest…" : "Entre em Play com o Quest conectado.", EditorStyles.whiteLabel);
+                    EditorApplication.isPlaying ? "Waiting for the Quest camera…" : "Enter Play Mode with the Quest connected.", EditorStyles.whiteLabel);
                 return;
             }
             GUI.DrawTexture(area, rt, ScaleMode.ScaleToFit, false);
@@ -94,8 +94,8 @@ namespace LinkParaMac.EditorTools
         {
             string a = (arg ?? "").Trim();
             if (a.StartsWith("on")) return Start(int.TryParse(a.Substring(2).Trim(), out var p) ? p : DefaultPort);
-            if (a == "off") { Stop(); return "stream parado"; }
-            return Running ? $"Stream: {Url} — {Clients} assistindo, até {MaxFps} fps" : "Stream: parado (stream on)";
+            if (a == "off") { Stop(); return "stream stopped"; }
+            return Running ? $"Stream: {Url} — {Clients} watching, up to {MaxFps} fps" : "Stream: stopped (stream on)";
         }
 
         static string LanAddress()
@@ -122,7 +122,7 @@ namespace LinkParaMac.EditorTools
                 _listener.Prefixes.Add($"http://*:{port}/");
                 _listener.Start();
             }
-            catch (Exception e) { _listener = null; return "não deu pra abrir a porta " + port + ": " + e.Message; }
+            catch (Exception e) { _listener = null; return "couldn't open port " + port + ": " + e.Message; }
             Url = $"http://{LanAddress()}:{port}/";
             _encode = new BlockingCollection<byte[]>(2);
             var queue = _encode;
@@ -132,8 +132,8 @@ namespace LinkParaMac.EditorTools
             new Thread(() => AcceptLoop(listener)) { IsBackground = true, Name = "LinkStream HTTP" }.Start();
             LinkComposite.AddUser();
             LinkComposite.Composited += OnFrame;
-            Debug.Log("[LinkStream] espectador na rede: " + Url);
-            return "espectador ao vivo em " + Url + " (abra num navegador na mesma rede, ou no OBS como Browser Source)";
+            Debug.Log("[LinkStream] spectator on the network: " + Url);
+            return "live spectator at " + Url + " (open it in a browser on the same network, or in OBS as a Browser Source)";
         }
 
         public static void Stop()
@@ -161,7 +161,7 @@ namespace LinkParaMac.EditorTools
             });
         }
 
-        // RGBA + tamanho no começo (o encoder roda fora da thread principal).
+        // RGBA with the size up front (the encoder runs off the main thread).
         static byte[] Pack(byte[] rgba, int w, int h)
         {
             var b = new byte[rgba.Length + 8];
@@ -180,7 +180,7 @@ namespace LinkParaMac.EditorTools
                     int w = BitConverter.ToInt32(packed, 0), h = BitConverter.ToInt32(packed, 4);
                     var rgba = new byte[packed.Length - 8];
                     Buffer.BlockCopy(packed, 8, rgba, 0, rgba.Length);
-                    // Linha 0 embaixo (leitura da GPU): o JPEG sai em pé.
+                    // Row 0 at the bottom (GPU readback): the JPEG comes out upright.
                     byte[] jpeg = ImageConversion.EncodeArrayToJPG(rgba, GraphicsFormat.R8G8B8A8_UNorm, (uint)w, (uint)h, 0, 80);
                     _lastJpeg = jpeg;
                     Broadcast(jpeg);
@@ -228,8 +228,8 @@ namespace LinkParaMac.EditorTools
                     {
                         byte[] html = Encoding.UTF8.GetBytes(
                             "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>" +
-                            "<title>Link para Mac — ao vivo</title><style>html,body{margin:0;height:100%;background:#000}" +
-                            "img{width:100%;height:100%;object-fit:contain}</style></head><body><img src='/stream' alt='realidade mista ao vivo'></body></html>");
+                            "<title>Link para Mac — live</title><style>html,body{margin:0;height:100%;background:#000}" +
+                            "img{width:100%;height:100%;object-fit:contain}</style></head><body><img src='/stream' alt='live mixed reality'></body></html>");
                         ctx.Response.ContentType = "text/html; charset=utf-8";
                         ctx.Response.OutputStream.Write(html, 0, html.Length);
                         ctx.Response.Close();

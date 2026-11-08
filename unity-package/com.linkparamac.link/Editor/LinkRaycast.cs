@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: raycast de reserva pro Editor (no headset o app usa o EnvironmentRaycastManager).
-// Ordem: profundidade real relayada do Quest (LinkDepth) → sala real do MRUK (planos e volumes carregados
-// do headset pelo proxy) → colisores da cena (menos os que o app manda ignorar: LinkHooks.IgnoreCollider) → opcional:
-// distância fixa.
+// Link para Mac: fallback raycast for the Editor (on the headset the app uses EnvironmentRaycastManager).
+// Order: real depth relayed from the Quest (LinkDepth) → real MRUK room (planes and volumes loaded
+// from the headset through the proxy) → scene colliders (except those the app says to ignore: LinkHooks.IgnoreCollider) → optional:
+// fixed distance.
 
 using Meta.XR.MRUtilityKit;
 using UnityEngine;
@@ -11,7 +11,7 @@ namespace LinkParaMac.EditorTools
 {
     public static class LinkRaycast
     {
-        /// <summary>Distância da etiqueta quando nada é atingido (0 = desligado). Só pra teste.</summary>
+        /// <summary>Label distance when nothing is hit (0 = off). For testing only.</summary>
         public static float FixedDistance;
         public static int Hits, Misses;
         public static string LastSource = "-";
@@ -20,7 +20,7 @@ namespace LinkParaMac.EditorTools
         {
             point = default;
             normal = Vector3.up;
-            if (LinkDepth.Raycast(ray, maxDistance, out point, out normal)) { LastSource = "profundidade"; Hits++; return true; }
+            if (LinkDepth.Raycast(ray, maxDistance, out point, out normal)) { LastSource = "depth"; Hits++; return true; }
             float best = float.MaxValue;
 
             var mruk = MRUK.Instance;
@@ -39,14 +39,14 @@ namespace LinkParaMac.EditorTools
             foreach (var hit in Physics.RaycastAll(ray, maxDistance))
             {
                 if (hit.distance >= best || hit.collider == null) continue;
-                if (LinkHooks.IgnoreCollider != null && LinkHooks.IgnoreCollider(hit.collider)) continue; // etiquetas, sala mock (app)
+                if (LinkHooks.IgnoreCollider != null && LinkHooks.IgnoreCollider(hit.collider)) continue; // labels, mock room (app)
                 best = hit.distance; point = hit.point; normal = hit.normal; LastSource = "Physics:" + hit.collider.name;
             }
 
             if (best < float.MaxValue) { Hits++; return true; }
             if (FixedDistance > 0f)
             {
-                point = ray.GetPoint(FixedDistance); normal = -ray.direction; LastSource = "fixo"; Hits++;
+                point = ray.GetPoint(FixedDistance); normal = -ray.direction; LastSource = "fixed"; Hits++;
                 return true;
             }
             Misses++;

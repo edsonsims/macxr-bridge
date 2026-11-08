@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: feed ao vivo da câmera do Quest (relayada) no Editor.
-// - mostra o quadro num quad à frente (conferir orientação/qualidade);
-// - injeta no PassthroughCameraAccess tudo que a detecção usa: textura, IsPlaying, intrínsecos,
-//   resolução e pose da câmera (GetCameraPose = pose da cabeça ∘ offset da lente, com a mesma fórmula
-//   que o MRUK usa no headset);
-// - pede ao app (LinkHooks.WireDetection) que ligue a detecção real dele — no Hello World: a fonte de passthrough
-//   no LabelManager, o mock desligado e o raycast de reserva (LinkRaycast).
-// Classe estática movida por EditorApplication.update (MonoBehaviour na pasta Editor não pode ser
-// AddComponent em runtime).
+// Link para Mac: live feed of the (relayed) Quest camera in the Editor.
+// - shows the frame on a quad in front of you (to check orientation/quality);
+// - injects into PassthroughCameraAccess everything detection uses: texture, IsPlaying, intrinsics,
+//   resolution and camera pose (GetCameraPose = head pose ∘ lens offset, using the same formula
+//   MRUK uses on the headset);
+// - asks the app (LinkHooks.WireDetection) to wire up its real detection — in Hello World: the passthrough source
+//   in LabelManager, the mock turned off and the fallback raycast (LinkRaycast).
+// Static class driven by EditorApplication.update (a MonoBehaviour in the Editor folder cannot be
+// added with AddComponent at runtime).
 
 using System;
 using System.IO;
@@ -26,22 +26,22 @@ namespace LinkParaMac.EditorTools
         public static bool FlipVertical;
         public static bool FlipHorizontal;
         public static bool DriveDetection;
-        public static string TestImagePath; // quando definido, injeta essa imagem fixa em vez do feed ao vivo
+        public static string TestImagePath; // when set, injects this fixed image instead of the live feed
         public static string LastWiringReport = "";
-        public static float Threshold = -1f; // <0 = não mexe; senão limiar só nesta sessão (agent.minConfidence + provider.scoreThreshold)
+        public static float Threshold = -1f; // <0 = leave untouched; otherwise a threshold for this session only (agent.minConfidence + provider.scoreThreshold)
         static object _origMinConf, _origScoreThr;
 
-        // Extrínsecos da câmera de passthrough esquerda do Quest 3 (Camera2 id=50: LENS_POSE_TRANSLATION/ROTATION).
-        // TODO(runtime): mandar no FrameInfo junto com o quadro (exige rebuild do runtime + relançar o Unity).
+        // Extrinsics of the Quest 3 left passthrough camera (Camera2 id=50: LENS_POSE_TRANSLATION/ROTATION).
+        // TODO(runtime): send them in FrameInfo along with the frame (requires rebuilding the runtime + relaunching Unity).
         static readonly Vector3 LensTranslation = new Vector3(-0.03224482f, -0.01726034f, -0.06312903f);
         static readonly Vector4 LensRotation = new Vector4(-0.99526715f, -0.00131198f, -0.00368363f, 0.09709802f);
 
-        // Rotação da câmera RGB esquerda em relação à cabeça (CenterEye), medida alinhando as bordas da
-        // profundidade do ambiente (que vem na pose da visão = cabeça) com a imagem da câmera (2 quadros de
-        // profundidade x 2 da câmera, link-para-mac/tools/align-camera-depth.py): ~2° pra baixo, 3° pra direita,
-        // 2° de rolagem horária (±1°). O LENS_POSE_ROTATION do Camera2 é relativo ao giroscópio (não à cabeça) e
-        // dava 11° pra baixo: ~20 cm de erro vertical numa etiqueta a 1,5 m.
-        // "camera-show ... lens=camera2" volta à fórmula antiga pra comparar.
+        // Rotation of the left RGB camera relative to the head (CenterEye), measured by aligning the edges of the
+        // environment depth (which comes in the view pose = head) with the camera image (2 depth frames
+        // x 2 camera frames, link-para-mac/tools/align-camera-depth.py): ~2° down, 3° right,
+        // 2° clockwise roll (±1°). Camera2's LENS_POSE_ROTATION is relative to the gyroscope (not the head) and
+        // gave 11° down: ~20 cm of vertical error on a label at 1.5 m.
+        // "camera-show ... lens=camera2" switches back to the old formula for comparison.
         static readonly Quaternion HeadFromCameraCalibrated = new Quaternion(0.01699f, 0.02647f, -0.01790f, 0.99934f);
         public static bool UseCamera2LensRotation;
 
@@ -74,7 +74,7 @@ namespace LinkParaMac.EditorTools
         {
             string a = arg ?? "";
             Cleanup();
-            _autoDone = true; // configurado à mão: o auto não mexe mais neste Play
+            _autoDone = true; // configured by hand: auto won't touch it again during this Play
             Enabled = a != "off";
             ShowQuad = !a.Contains("noquad") && Enabled;
             FlipVertical = a.Contains("flipv");
@@ -82,7 +82,7 @@ namespace LinkParaMac.EditorTools
             DriveDetection = a.Contains("detect");
             LinkRaycast.FixedDistance = a.Contains("fixed") ? 1.2f : 0f;
             UseCamera2LensRotation = a.Contains("lens=camera2");
-            LinkRaycast.Hits = LinkRaycast.Misses = 0; LinkRaycast.LastSource = "-"; // contadores por configuração
+            LinkRaycast.Hits = LinkRaycast.Misses = 0; LinkRaycast.LastSource = "-"; // counters per configuration
             Threshold = -1f;
             foreach (var part in a.Split(' '))
                 if (part.StartsWith("thr=") && float.TryParse(part.Substring(4), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var thr)) Threshold = thr;
@@ -90,17 +90,17 @@ namespace LinkParaMac.EditorTools
             if (a.Contains("test"))
             {
                 TestImagePath = Path.Combine(Directory.GetCurrentDirectory(), ".link", "test.png");
-                if (!File.Exists(TestImagePath)) return "imagem de teste não existe: " + TestImagePath;
+                if (!File.Exists(TestImagePath)) return "test image does not exist: " + TestImagePath;
             }
-            if (!Enabled) return "feed ao vivo desligado";
-            string report = $"feed {(TestImagePath != null ? "de TESTE (" + Path.GetFileName(TestImagePath) + ")" : "ao vivo")} " +
-                            $"{(ShowQuad ? "com quad" : "sem quad")}; detect={DriveDetection} fixed={LinkRaycast.FixedDistance > 0}";
+            if (!Enabled) return "live feed off";
+            string report = $"{(TestImagePath != null ? "TEST feed (" + Path.GetFileName(TestImagePath) + ")" : "live feed")} " +
+                            $"{(ShowQuad ? "with quad" : "no quad")}; detect={DriveDetection} fixed={LinkRaycast.FixedDistance > 0}";
             if (DriveDetection) report += " | " + WireDetection();
             return report;
         }
 
-        // Liga sozinho a câmera real + detecção (sem quad) no Play quando o canal da câmera do Quest conecta.
-        // Desligar: EditorPrefs "LinkParaMac.AutoCamera" = false, ou "camera-show off" (vale até o fim do Play).
+        // Automatically turns on the real camera + detection (no quad) in Play when the Quest camera channel connects.
+        // To disable: EditorPrefs "LinkParaMac.AutoCamera" = false, or "camera-show off" (lasts until the end of Play).
         static bool _autoDone;
         static double _nextAutoCheck;
 
@@ -113,7 +113,7 @@ namespace LinkParaMac.EditorTools
             if (!LinkCameraSource.IsConnected()) return;
             if (UnityEngine.Object.FindAnyObjectByType<PassthroughCameraAccess>(FindObjectsInactive.Include) == null) return;
             _autoDone = true;
-            Debug.Log("[LinkCameraFeed] câmera do Quest conectada: ligando a detecção real (auto) → " + Configure("detect noquad"));
+            Debug.Log("[LinkCameraFeed] Quest camera connected: enabling real detection (auto) → " + Configure("detect noquad"));
         }
 
         static void Tick()
@@ -133,17 +133,17 @@ namespace LinkParaMac.EditorTools
                         _testTexture.LoadImage(File.ReadAllBytes(TestImagePath));
                     }
                     tex = _testTexture; w = tex.width; h = tex.height;
-                    // Intrínsecos aproximados da câmera esquerda pra 640x480 (corte central do sensor 1280x1280).
+                    // Approximate left camera intrinsics for 640x480 (center crop of the 1280x1280 sensor).
                     fx = fy = 431.4f * w / 640f; cx = 320.6f * w / 640f; cy = 239.8f * h / 480f;
                 }
                 else
                 {
-                    // Vários leitores puxam a câmera (HUD, compositor, gravação): cada um guarda o último quadro que viu.
+                    // Several readers pull from the camera (HUD, compositor, recording): each keeps the last frame it saw.
                     if (!LinkCameraSource.TryGetLatestTexture(out tex, out var info) || tex == null || info.frameId == _lastFrameId) return;
                     _lastFrameId = info.frameId;
                     w = (int)info.width; h = (int)info.height;
                     fx = info.fx; fy = info.fy; cx = info.cx; cy = info.cy;
-                    // Clientes antigos escalavam fy errado (esticando em vez de recortar); pixels são quadrados.
+                    // Old clients scaled fy wrong (stretching instead of cropping); pixels are square.
                     if (fy < fx * 0.9f) fy = fx;
                 }
                 SuppressNativeCpuImage();
@@ -199,7 +199,7 @@ namespace LinkParaMac.EditorTools
             _setIntrinsics = t.GetProperty("Intrinsics", F)?.GetSetMethod(true);
             _setResolution = t.GetProperty("CurrentResolution", F)?.GetSetMethod(true);
             if (!_pca.gameObject.activeSelf) _pca.gameObject.SetActive(true);
-            Debug.Log("[LinkCameraFeed] PassthroughCameraAccess encontrado; injetando quadros reais");
+            Debug.Log("[LinkCameraFeed] PassthroughCameraAccess found; injecting real frames");
             return true;
         }
 
@@ -209,15 +209,15 @@ namespace LinkParaMac.EditorTools
             _fTexture?.SetValue(_pca, tex);
             _fIsPlaying?.SetValue(_pca, (bool?)true);
             _fHasPermission?.SetValue(_pca, true);
-            _fTimestamp?.SetValue(_pca, DateTime.UtcNow.Ticks); // qualquer valor > 0; a pose vem do hook abaixo
+            _fTimestamp?.SetValue(_pca, DateTime.UtcNow.Ticks); // any value > 0; the pose comes from the hook below
             _setResolution?.Invoke(_pca, new object[] { new Vector2Int(w, h) });
-            // Intrínsecos já no espaço do quadro: SensorResolution = resolução atual → recorte = quadro inteiro.
+            // Intrinsics already in frame space: SensorResolution = current resolution → crop = whole frame.
             var intrinsics = new PassthroughCameraAccess.CameraIntrinsics
             {
                 FocalLength = new Vector2(fx, fy),
                 PrincipalPoint = new Vector2(cx, cy),
                 SensorResolution = new Vector2Int(w, h),
-                // Translação: extrínsecos do Camera2 (poucos cm). Rotação: calibrada contra a profundidade (ver acima).
+                // Translation: Camera2 extrinsics (a few cm). Rotation: calibrated against depth (see above).
                 LensOffset = new Pose(new Vector3(LensTranslation.x, LensTranslation.y, -LensTranslation.z),
                     UseCamera2LensRotation
                         ? Quaternion.Inverse(new Quaternion(-LensRotation.x, -LensRotation.y, LensRotation.z, LensRotation.w)) * Quaternion.Euler(180, 0, 0)
@@ -227,8 +227,8 @@ namespace LinkParaMac.EditorTools
             HookHeadPose();
         }
 
-        // GetCameraPose() pede a pose da cabeça ao MRUK nativo (GetHeadsetPoseAtTime), que no Editor não tem câmera.
-        // Trocamos o delegate por um que devolve o CenterEyeAnchor (em convenção OpenXR, pois o PCA aplica FlipZ).
+        // GetCameraPose() asks native MRUK for the head pose (GetHeadsetPoseAtTime), which has no camera in the Editor.
+        // We swap the delegate for one that returns the CenterEyeAnchor (in OpenXR convention, since the PCA applies FlipZ).
         static void HookHeadPose()
         {
             if (_headPoseHooked) return;
@@ -239,18 +239,18 @@ namespace LinkParaMac.EditorTools
                 if (funcs != null) break;
             }
             _fHeadPoseDelegate = funcs?.GetField("GetHeadsetPoseAtTime", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
-            if (_fHeadPoseDelegate == null) { Debug.LogWarning("[LinkCameraFeed] MRUKNativeFuncs.GetHeadsetPoseAtTime não encontrado"); _headPoseHooked = true; return; }
+            if (_fHeadPoseDelegate == null) { Debug.LogWarning("[LinkCameraFeed] MRUKNativeFuncs.GetHeadsetPoseAtTime not found"); _headPoseHooked = true; return; }
             _originalHeadPoseDelegate = _fHeadPoseDelegate.GetValue(null);
             var method = typeof(LinkCameraFeed).GetMethod(nameof(HeadPoseAtTime), BindingFlags.Static | BindingFlags.NonPublic);
             _fHeadPoseDelegate.SetValue(null, Delegate.CreateDelegate(_fHeadPoseDelegate.FieldType, method));
             _headPoseHooked = true;
-            Debug.Log("[LinkCameraFeed] GetCameraPose ligado à pose da cabeça do Editor");
+            Debug.Log("[LinkCameraFeed] GetCameraPose hooked to the Editor head pose");
         }
 
-        // No Editor, PassthroughCameraAccess.Update() puxa uma imagem de CPU do MRUK nativo
-        // (CameraAcquireLatestCpuImage — uma câmera própria do Editor, em outra resolução) e faz
-        // LoadRawTextureData na MESMA textura que injetamos: o YOLO recebia lixo listrado. Anulamos o
-        // delegate enquanto o feed está ligado (o PCA então sai cedo no Update e não toca na textura).
+        // In the Editor, PassthroughCameraAccess.Update() pulls a CPU image from native MRUK
+        // (CameraAcquireLatestCpuImage — the Editor's own camera, at a different resolution) and calls
+        // LoadRawTextureData on the SAME texture we inject: YOLO was receiving striped garbage. We null out the
+        // delegate while the feed is on (the PCA then returns early in Update and doesn't touch the texture).
         static void SuppressNativeCpuImage()
         {
             if (_fCpuImage == null)
@@ -266,22 +266,22 @@ namespace LinkParaMac.EditorTools
             }
             var current = _fCpuImage.GetValue(null);
             if (current == null) return;
-            _originalCpuImage = current; // o MRUK pode recarregar as funções nativas; guardamos a mais recente
+            _originalCpuImage = current; // MRUK may reload the native functions; we keep the most recent one
             _fCpuImage.SetValue(null, null);
-            Debug.Log("[LinkCameraFeed] imagem de CPU do MRUK nativo desligada (não sobrescreve mais a textura)");
+            Debug.Log("[LinkCameraFeed] native MRUK CPU image disabled (no longer overwrites the texture)");
         }
 
         static void HeadPoseAtTime(long time, ref Vector3 position, ref Quaternion orientation)
         {
             Vector3 p; Quaternion r;
-            if (LinkSession.TryGetReplayHead(out var recorded)) { p = recorded.position; r = recorded.rotation; } // sessão gravada
+            if (LinkSession.TryGetReplayHead(out var recorded)) { p = recorded.position; r = recorded.rotation; } // recorded session
             else
             {
                 var head = Head();
                 if (head == null) { position = Vector3.zero; orientation = Quaternion.identity; return; }
                 p = head.position; r = head.rotation;
             }
-            position = new Vector3(p.x, p.y, -p.z);           // FlipZ: o PCA desfaz
+            position = new Vector3(p.x, p.y, -p.z);           // FlipZ: the PCA undoes it
             orientation = new Quaternion(-r.x, -r.y, r.z, r.w);
         }
 
@@ -289,20 +289,20 @@ namespace LinkParaMac.EditorTools
         {
             try
             {
-                if (!ResolvePca()) return "PassthroughCameraAccess não encontrado";
-                string msg = LinkHooks.WireDetection != null ? LinkHooks.WireDetection() : "o app não liga a própria detecção (LinkHooks.WireDetection)";
+                if (!ResolvePca()) return "PassthroughCameraAccess not found";
+                string msg = LinkHooks.WireDetection != null ? LinkHooks.WireDetection() : "the app does not wire up its own detection (LinkHooks.WireDetection)";
                 if (Threshold >= 0f) msg += "; " + ApplyThreshold(Threshold);
                 LastWiringReport = msg;
                 Debug.Log("[LinkCameraFeed] " + msg);
                 return msg;
             }
-            catch (Exception e) { return "falha ao ligar detecção: " + e.Message; }
+            catch (Exception e) { return "failed to wire up detection: " + e.Message; }
         }
 
         static string ApplyThreshold(float thr)
         {
             var agent = UnityEngine.Object.FindAnyObjectByType<Meta.XR.BuildingBlocks.AIBlocks.ObjectDetectionAgent>(FindObjectsInactive.Include);
-            if (agent == null) return "sem agent; ";
+            if (agent == null) return "no agent; ";
             const BindingFlags F = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
             var fMin = agent.GetType().GetField("minConfidence", F);
             var provider = agent.GetType().GetField("providerAsset", F)?.GetValue(agent);
@@ -311,8 +311,8 @@ namespace LinkParaMac.EditorTools
             if (_origScoreThr == null) _origScoreThr = fThr?.GetValue(provider);
             fMin?.SetValue(agent, thr);
             fThr?.SetValue(provider, thr);
-            LinkHooks.ApplyAppThreshold?.Invoke(thr); // o corte do próprio app (no Hello World, LabelManager.minScore)
-            return $"limiar {thr} (sessão; agent, provider e app); ";
+            LinkHooks.ApplyAppThreshold?.Invoke(thr); // the app's own cutoff (in Hello World, LabelManager.minScore)
+            return $"threshold {thr} (session; agent, provider and app); ";
         }
 
         static void RestoreThreshold()
@@ -335,7 +335,7 @@ namespace LinkParaMac.EditorTools
             if (_fCpuImage != null && _originalCpuImage != null && _fCpuImage.GetValue(null) == null) _fCpuImage.SetValue(null, _originalCpuImage);
             _originalCpuImage = null;
             LinkHooks.UnwireDetection?.Invoke();
-            if (_pca != null) { _fIsPlaying?.SetValue(_pca, null); _fTexture?.SetValue(_pca, null); } // para o agent também
+            if (_pca != null) { _fIsPlaying?.SetValue(_pca, null); _fTexture?.SetValue(_pca, null); } // stops the agent too
             _pca = null; _head = null; _lastFrameId = 0;
             if (_testTexture != null) { UnityEngine.Object.DestroyImmediate(_testTexture); _testTexture = null; }
             Enabled = false;

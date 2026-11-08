@@ -1,15 +1,15 @@
 #!/bin/zsh
-# Adiciona o pacote Unity do OXRSys (menu Tools/OpenXR → Use OXRSys Runtime) a um projeto Unity,
-# apontando para a cópia local do fork. Uso: 60-unity-add-package.sh /caminho/do/ProjetoUnity
+# Adds the OXRSys Unity package (menu Tools/OpenXR → Use OXRSys Runtime) to a Unity project,
+# pointing at the local copy of the fork. Usage: 60-unity-add-package.sh /path/to/UnityProject
 set -euo pipefail
 source "$(dirname "${(%):-%x}")/common.sh"
 
 proj="${1:-}"
-[[ -n "$proj" && -f "$proj/Packages/manifest.json" ]] || { fail "Uso: $0 /caminho/do/ProjetoUnity (precisa ter Packages/manifest.json)"; exit 1; }
+[[ -n "$proj" && -f "$proj/Packages/manifest.json" ]] || { fail "Usage: $0 /path/to/UnityProject (must contain Packages/manifest.json)"; exit 1; }
 pkg_dir="${OXR_DIR}/scripts/unity"
-[[ -f "$pkg_dir/package.json" ]] || { fail "pacote não encontrado em $pkg_dir"; exit 1; }
+[[ -f "$pkg_dir/package.json" ]] || { fail "package not found at $pkg_dir"; exit 1; }
 
-# Caminho relativo a partir de Packages/ (o Unity resolve "file:" relativo à pasta Packages).
+# Path relative to Packages/ (Unity resolves "file:" relative to the Packages folder).
 rel="$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' "$pkg_dir" "$proj/Packages")"
 python3 - "$proj/Packages/manifest.json" "file:${rel}" <<'PY'
 import json, sys
@@ -22,4 +22,4 @@ with open(path, "w") as f:
     f.write("\n")
 print(f"net.demonixis.oxrsys-unity -> {dep}")
 PY
-ok "manifest.json atualizado. No Unity: Tools → OpenXR → Use OXRSys Runtime, depois Play."
+ok "manifest.json updated. In Unity: Tools → OpenXR → Use OXRSys Runtime, then Play."

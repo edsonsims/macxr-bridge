@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Link para Mac — variáveis e funções compartilhadas pelos scripts.
-# Este arquivo é carregado com `source`; não execute diretamente.
+# Link para Mac — variables and functions shared by the scripts.
+# This file is loaded with `source`; do not run it directly.
 
 LPM_SCRIPTS_DIR="$(cd "$(dirname "${(%):-%x}")" && pwd)"
 LPM_ROOT="$(cd "${LPM_SCRIPTS_DIR}/.." && pwd)"
@@ -16,7 +16,7 @@ OXR_APK_DEBUG="${OXR_ANDROID_DIR}/app/build/outputs/apk/debug/app-debug.apk"
 OXR_CONFIG_DIR="${HOME}/Library/Application Support/OXRSys"
 OXR_TOML="${OXR_CONFIG_DIR}/oxrsys-runtime.toml"
 
-# Portas do transporte USB (adb reverse). 9948 é o canal "spatial", ainda reservado.
+# USB transport ports (adb reverse). 9948 is the "spatial" channel, still reserved.
 LPM_PORTS=(9944 9945 9946 9948 9949)
 
 autoload -U colors && colors
@@ -26,7 +26,7 @@ warn() { print -P "%F{yellow}!%f $*"; }
 info() { print -P "%F{cyan}→%f $*"; }
 step() { print; print -P "%B== $* ==%b"; }
 
-# Descobre o Android SDK pelas variáveis de ambiente ou pelo caminho padrão do Android Studio.
+# Finds the Android SDK from the environment variables or Android Studio's default path.
 android_sdk_dir() {
   for d in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" "${HOME}/Library/Android/sdk"; do
     [[ -n "$d" && -d "$d" ]] && { print -r -- "$d"; return 0; }
@@ -34,7 +34,7 @@ android_sdk_dir() {
   return 1
 }
 
-# Caminho do adb: PATH primeiro, depois platform-tools do SDK.
+# Path to adb: PATH first, then the SDK's platform-tools.
 adb_bin() {
   if command -v adb >/dev/null 2>&1; then command -v adb; return 0; fi
   local sdk; sdk="$(android_sdk_dir)" || return 1
@@ -42,7 +42,7 @@ adb_bin() {
   return 1
 }
 
-# Serial do headset: QUEST_SERIAL, ou o único dispositivo autorizado no adb.
+# Headset serial: QUEST_SERIAL, or the only authorized device on adb.
 quest_serial() {
   if [[ -n "${QUEST_SERIAL:-}" ]]; then print -r -- "${QUEST_SERIAL}"; return 0; fi
   local adb; adb="$(adb_bin)" || return 1
@@ -51,6 +51,6 @@ quest_serial() {
   serials=("${(@)serials:#}")
   if (( ${#serials} == 1 )); then print -r -- "${serials[1]}"; return 0; fi
   if (( ${#serials} == 0 )); then return 1; fi
-  warn "Mais de um dispositivo adb. Defina QUEST_SERIAL=<serial>. Encontrados: ${serials[*]}" >&2
+  warn "More than one adb device. Set QUEST_SERIAL=<serial>. Found: ${serials[*]}" >&2
   return 1
 }

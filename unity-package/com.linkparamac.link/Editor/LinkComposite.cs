@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: imagem de realidade mista (câmera real do Quest + app) — usada pela gravação (record), pelo
-// espectador ao vivo (janela e stream na rede) e pelo que mais pedir. A cada quadro novo da câmera: o fundo é o
-// quadro; por cima, o app renderizado por uma câmera virtual NA POSE e com os INTRÍNSECOS da câmera real
-// (projeção fora do eixo pelo ponto principal), então o virtual cai em cima do real como no headset.
+// Link para Mac: mixed reality image (real Quest camera + app), used by recording (record), by the live
+// spectator (window and network stream) and by anything else that asks for it. On each new camera frame: the
+// background is the frame; on top, the app rendered by a virtual camera AT THE POSE and with the INTRINSICS of the
+// real camera (off-axis projection through the principal point), so the virtual lands on the real as in the headset.
 using System;
 using Meta.XR;
 using UnityEditor;
@@ -13,7 +13,7 @@ namespace LinkParaMac.EditorTools
     [InitializeOnLoad]
     public static class LinkComposite
     {
-        /// <summary>Cada imagem nova (thread principal). A RenderTexture é reaproveitada: leia ou copie na hora.</summary>
+        /// <summary>Each new image (main thread). The RenderTexture is reused: read or copy it right away.</summary>
         public static event Action<RenderTexture, LinkCameraSource.FrameInfo> Composited;
         public static RenderTexture Output => _rtOut;
         public static int Frames { get; private set; }
@@ -50,7 +50,7 @@ namespace LinkParaMac.EditorTools
             Release();
             _rtApp = new RenderTexture(w, h, 24, RenderTextureFormat.ARGB32) { name = "Link Composite App" };
             _rtOut = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32) { name = "Link Composite" };
-            if (_over == null) _over = new Material(Shader.Find("Sprites/Default")); // blend alpha "por cima"
+            if (_over == null) _over = new Material(Shader.Find("Sprites/Default")); // "over" alpha blend
             var go = new GameObject("Link Composite Camera (Editor)") { hideFlags = HideFlags.DontSave };
             _cam = go.AddComponent<Camera>();
             _cam.enabled = false;
@@ -81,14 +81,14 @@ namespace LinkParaMac.EditorTools
                 var intr = pca.Intrinsics;
                 float n = _cam.nearClipPlane, f = _cam.farClipPlane;
                 float fx = intr.FocalLength.x, fy = intr.FocalLength.y, cx = intr.PrincipalPoint.x, cy = intr.PrincipalPoint.y;
-                // Intrínsecos no espaço do quadro (o feed injeta SensorResolution = quadro).
+                // Intrinsics in frame space (the feed injects SensorResolution = frame).
                 float sx = (float)w / Mathf.Max(1, intr.SensorResolution.x), sy = (float)h / Mathf.Max(1, intr.SensorResolution.y);
                 fx *= sx; cx *= sx; fy *= sy; cy *= sy;
                 _cam.projectionMatrix = Matrix4x4.Frustum(-cx * n / fx, (w - cx) * n / fx, -cy * n / fy, (h - cy) * n / fy, n, f);
                 _cam.Render();
 
-                Graphics.Blit(tex, _rtOut);           // fundo: a câmera real
-                Graphics.Blit(_rtApp, _rtOut, _over); // por cima: o app (alpha)
+                Graphics.Blit(tex, _rtOut);           // background: the real camera
+                Graphics.Blit(_rtApp, _rtOut, _over); // on top: the app (alpha)
                 Frames++;
                 Composited?.Invoke(_rtOut, info);
             }

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: ponto de apoio das sessões gravadas (LinkSession, no Editor). Fica no OVRCameraRig e roda
-// depois de tudo (LateUpdate + onBeforeRender):
-//  - gravando: avisa o Editor a cada quadro pra guardar a pose da cabeça;
-//  - reproduzindo: move o TrackingSpace pra que a cabeça (CenterEyeAnchor) fique na pose gravada, seja
-//    qual for a pose que o rastreamento informa (headset parado, na mesa, ou desligado).
+// Link para Mac: anchor point for recorded sessions (LinkSession, in the Editor). Lives on the OVRCameraRig and runs
+// after everything else (LateUpdate + onBeforeRender):
+//  - recording: notifies the Editor every frame so it can store the head pose;
+//  - replaying: moves the TrackingSpace so the head (CenterEyeAnchor) sits at the recorded pose, whatever
+//    pose tracking reports (headset still, lying on the desk, or switched off).
 #if UNITY_EDITOR
 using System;
 using UnityEngine;
@@ -14,8 +14,8 @@ namespace LinkParaMac
     [DefaultExecutionOrder(32000)]
     public sealed class LinkSessionRig : MonoBehaviour
     {
-        public static Action Late;                 // gravação
-        public static Func<Pose?> TargetHead;      // reprodução (null = não mexe)
+        public static Action Late;                 // recording
+        public static Func<Pose?> TargetHead;      // replay (null = leave as is)
 
         OVRCameraRig _rig;
         bool _moved;
@@ -47,7 +47,7 @@ namespace LinkParaMac
             if (target == null) { Restore(); return; }
             Transform ts = _rig.trackingSpace, eye = _rig.centerEyeAnchor;
             if (!_moved) { _origPos = ts.localPosition; _origRot = ts.localRotation; _moved = true; }
-            // cabeça no mundo = TrackingSpace * pose local da cabeça → TrackingSpace = gravada * inversa(local)
+            // head in world = TrackingSpace * local head pose → TrackingSpace = recorded * inverse(local)
             Quaternion rot = target.Value.rotation * Quaternion.Inverse(eye.localRotation);
             ts.SetPositionAndRotation(target.Value.position - rot * eye.localPosition, rot);
         }

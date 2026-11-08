@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: no Play do Editor com o runtime OXRSys (Quest ligado ao Mac), o som do app vai pro fone do Quest
-// (LinkAudioTap no AudioListener). Sem o OXRSys (Editor puro, XR Simulator, Link do Windows) nada muda.
+// Link para Mac: in Editor Play Mode with the OXRSys runtime (Quest connected to the Mac), the app's sound goes to the
+// Quest headset (LinkAudioTap on the AudioListener). Without OXRSys (plain Editor, XR Simulator, Windows Link) nothing changes.
 #if UNITY_EDITOR
 using UnityEngine;
 
@@ -8,7 +8,7 @@ namespace LinkParaMac
 {
     public static class LinkRuntime
     {
-        /// <summary>True quando o runtime OpenXR ativo é o OXRSys (Link para Mac).</summary>
+        /// <summary>True when the active OpenXR runtime is OXRSys (Link para Mac).</summary>
         public static bool IsLinkParaMac()
         {
             string json = System.Environment.GetEnvironmentVariable("XR_RUNTIME_JSON") ?? "";

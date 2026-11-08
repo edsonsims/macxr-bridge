@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: profundidade real do ambiente (XR_META_environment_depth) relayada do Quest.
-// O cliente lê o mapa de profundidade do olho esquerdo (320x320, uint16) 5x por segundo e manda pelo
-// canal da câmera; o runtime do Mac guarda o último e exporta oxrsys_depth_get_latest. Aqui fazemos o
-// mesmo que o EnvironmentRaycastManager faz no headset: um raio do mundo vira pontos na visão da
-// câmera de profundidade e comparamos com a profundidade medida.
+// Link para Mac: real environment depth (XR_META_environment_depth) relayed from the Quest.
+// The client reads the left-eye depth map (320x320, uint16) 5x per second and sends it over the
+// camera channel; the Mac runtime keeps the latest one and exports oxrsys_depth_get_latest. Here we do the
+// same thing EnvironmentRaycastManager does on the headset: a world ray becomes points in the depth
+// camera's view and we compare them against the measured depth.
 //
-// Espaços: as poses vêm no STAGE do cliente (OpenXR, destro, -Z pra frente). Convertemos com FlipZ e
-// levamos ao mundo do Unity com T = cabeça do Editor * inversa(cabeça do cliente), estimada com a cabeça
-// parada (T é constante: só muda se alguém recentrar).
+// Spaces: poses arrive in the client's STAGE (OpenXR, right-handed, -Z forward). We convert with FlipZ and
+// bring them into the Unity world with T = Editor head * inverse(client head), estimated while the head is
+// still (T is constant: it only changes if someone recenters).
 
 using System;
 using System.IO;
@@ -25,8 +25,8 @@ namespace LinkParaMac.EditorTools
         {
             public uint width, height, valid, frameId;
             public float nearZ, farZ;
-            public float hqx, hqy, hqz, hqw, hpx, hpy, hpz; // headPose (STAGE do cliente)
-            public float vqx, vqy, vqz, vqw, vpx, vpy, vpz; // viewPose (STAGE do cliente)
+            public float hqx, hqy, hqz, hqw, hpx, hpy, hpz; // headPose (client STAGE)
+            public float vqx, vqy, vqz, vqw, vpx, vpy, vpz; // viewPose (client STAGE)
             public float angleLeft, angleRight, angleUp, angleDown;
             public long displayTimeNs;
         }
@@ -44,20 +44,20 @@ namespace LinkParaMac.EditorTools
         static double _lastFrameTime = -1;
         static int _frames;
 
-        // Mundo do Unity ← STAGE do cliente (já convertido pra Unity).
+        // Unity world ← client STAGE (already converted to Unity).
         static bool _hasT;
         static Vector3 _tPos;
         static Quaternion _tRot = Quaternion.identity;
         static int _tSamples;
         static Pose _prevClientHead, _prevEditorHead;
         static bool _hasPrev;
-        static Pose _viewWorld; // pose da visão de profundidade no mundo do Unity (último quadro)
+        static Pose _viewWorld; // depth view pose in the Unity world (latest frame)
 
         public static int Hits, Misses, OutOfView;
         public static int FrameCount => _frames;
-        /// <summary>Cada quadro novo (já com a pose da visão no mundo do Unity): pra gravar sessões.</summary>
+        /// <summary>Each new frame (with the view pose already in the Unity world): for recording sessions.</summary>
         public static event Action<DepthInfo, ushort[], Pose> FrameLoaded;
-        /// <summary>Reprodução de sessão: não puxa do runtime; os quadros chegam por InjectReplay.</summary>
+        /// <summary>Session replay: doesn't pull from the runtime; frames arrive via InjectReplay.</summary>
         public static bool ReplayActive;
         public static string LastResult = "-";
         public static bool Enabled = true;
@@ -77,7 +77,7 @@ namespace LinkParaMac.EditorTools
         static bool Resolve()
         {
             if (_resolved) return true;
-            IntPtr p = dlsym(RTLD_DEFAULT, "oxrsys_depth_get_latest"); // o runtime só carrega no Play: não guardar a falha
+            IntPtr p = dlsym(RTLD_DEFAULT, "oxrsys_depth_get_latest"); // the runtime only loads in Play: don't cache the failure
             if (p == IntPtr.Zero)
             {
                 string json = Environment.GetEnvironmentVariable("XR_RUNTIME_JSON");
@@ -87,7 +87,7 @@ namespace LinkParaMac.EditorTools
                     if (handle != IntPtr.Zero) p = dlsym(handle, "oxrsys_depth_get_latest");
                 }
             }
-            if (p == IntPtr.Zero) return false; // fora do Play ou runtime antigo (sem profundidade)
+            if (p == IntPtr.Zero) return false; // outside Play or an old runtime (no depth)
             _get = Marshal.GetDelegateForFunctionPointer<GetLatestDepthDelegate>(p);
             _resolved = true;
             return true;
@@ -122,7 +122,7 @@ namespace LinkParaMac.EditorTools
             if (_hasT) FrameLoaded?.Invoke(_info, _depth, _viewWorld);
         }
 
-        /// <summary>Quadro de uma sessão gravada: a pose da visão já vem no mundo do Unity.</summary>
+        /// <summary>Frame from a recorded session: the view pose already comes in the Unity world.</summary>
         public static void InjectReplay(DepthInfo info, ushort[] data, Pose viewWorld)
         {
             _info = info;
@@ -149,8 +149,8 @@ namespace LinkParaMac.EditorTools
             return rig != null ? rig.centerEyeAnchor : (Camera.main != null ? Camera.main.transform : null);
         }
 
-        // T = cabeça do Editor * inversa(cabeça do cliente). Só aceita amostras com a cabeça parada (entre dois
-        // quadros de profundidade, 200 ms) porque a pose do Editor é "agora" e a do cliente é do quadro.
+        // T = Editor head * inverse(client head). Only accepts samples with the head still (between two
+        // depth frames, 200 ms) because the Editor pose is "now" while the client's is from the frame.
         static void UpdateTransform()
         {
             var head = Head();
@@ -176,7 +176,7 @@ namespace LinkParaMac.EditorTools
             _viewWorld = new Pose(_tPos + _tRot * view.position, _tRot * view.rotation);
         }
 
-        /// <summary>Distância linear (eixo da visão) no pixel (i, j), linha 0 = baixo. NaN sem dado.</summary>
+        /// <summary>Linear distance (along the view axis) at pixel (i, j), row 0 = bottom. NaN when there is no data.</summary>
         static float LinearDepth(int i, int j)
         {
             int w = (int)_info.width, h = (int)_info.height;
@@ -209,7 +209,7 @@ namespace LinkParaMac.EditorTools
             return new Vector3(tx * z, ty * z, z);
         }
 
-        /// <summary>Grade de pontos do mundo onde o sensor de profundidade vê superfícies (até 6 m), pro painel de depuração.</summary>
+        /// <summary>Grid of world points where the depth sensor sees surfaces (up to 6 m), for the debug panel.</summary>
         public static System.Collections.Generic.List<Vector3> SampleWorldPoints(int cols, int rows)
         {
             var list = new System.Collections.Generic.List<Vector3>(cols * rows);
@@ -226,7 +226,7 @@ namespace LinkParaMac.EditorTools
             return list;
         }
 
-        /// <summary>Raycast contra a profundidade real (mesma ideia do EnvironmentRaycastManager no headset).</summary>
+        /// <summary>Raycast against the real depth (same idea as EnvironmentRaycastManager on the headset).</summary>
         public static bool Raycast(Ray ray, float maxDistance, out Vector3 point, out Vector3 normal)
         {
             point = default; normal = Vector3.up;
@@ -244,7 +244,7 @@ namespace LinkParaMac.EditorTools
                 everInView = true;
                 float z = LinearDepth((int)(u * _info.width), (int)(v * _info.height));
                 if (float.IsNaN(z) || p.z < z) { prevT = t; continue; }
-                // Passou da superfície entre prevT e t: refina por bisseção.
+                // Crossed the surface between prevT and t: refine by bisection.
                 float a = prevT, b = t;
                 for (int k = 0; k < 6; k++)
                 {
@@ -266,7 +266,7 @@ namespace LinkParaMac.EditorTools
             }
             if (!everInView) OutOfView++;
             Misses++;
-            LastResult = everInView ? "miss (nada até " + maxDistance.ToString("F1") + " m)" : "fora do campo da profundidade";
+            LastResult = everInView ? "miss (nothing within " + maxDistance.ToString("F1") + " m)" : "outside the depth field of view";
             return false;
         }
 
@@ -285,17 +285,17 @@ namespace LinkParaMac.EditorTools
 
         public static string Status()
         {
-            if (!Resolve()) return "Profundidade: runtime carregado não exporta oxrsys_depth_get_latest (recompile o runtime e reinicie o Unity)";
+            if (!Resolve()) return "Depth: the loaded runtime does not export oxrsys_depth_get_latest (rebuild the runtime and restart Unity)";
             string age = _lastFrameTime > 0 ? $"{EditorApplication.timeSinceStartup - _lastFrameTime:F1}s" : "-";
-            return $"Profundidade: quadros={_frames} último há {age} {_info.width}x{_info.height} near={_info.nearZ:F2} far={_info.farZ} " +
-                   $"T={(_hasT ? $"ok ({_tSamples} amostras paradas)" : "sem")} hits={Hits} misses={Misses} foraDoCampo={OutOfView} último={LastResult}";
+            return $"Depth: frames={_frames} last {age} ago {_info.width}x{_info.height} near={_info.nearZ:F2} far={_info.farZ} " +
+                   $"T={(_hasT ? $"ok ({_tSamples} still samples)" : "none")} hits={Hits} misses={Misses} outOfView={OutOfView} last={LastResult}";
         }
 
-        /// <summary>Salva .link/depth.png (cinza: perto = claro, 0–4 m; vermelho = sem dado) e testa um raio pra frente.</summary>
+        /// <summary>Saves .link/depth.png (gray: near = bright, 0–4 m; red = no data) and tests a ray straight ahead.</summary>
         public static string Capture()
         {
             if (!Resolve()) return Status();
-            if (_depth.Length == 0) return Status() + " — nenhum quadro ainda";
+            if (_depth.Length == 0) return Status() + " — no frames yet";
             int w = (int)_info.width, h = (int)_info.height;
             var tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
             var px = new Color32[w * h];
@@ -305,20 +305,20 @@ namespace LinkParaMac.EditorTools
                     float z = LinearDepth(i, j);
                     if (float.IsNaN(z)) { px[(h - 1 - j) * w + i] = new Color32(160, 0, 0, 255); continue; }
                     byte g = (byte)Mathf.Clamp(255f * (1f - z / 4f), 0f, 255f);
-                    px[(h - 1 - j) * w + i] = new Color32(g, g, g, 255); // EncodeToPNG põe a linha 0 no topo: invertemos
+                    px[(h - 1 - j) * w + i] = new Color32(g, g, g, 255); // EncodeToPNG puts row 0 at the top: we flip
                 }
             tex.SetPixels32(px);
             tex.Apply();
             File.WriteAllBytes(Path.Combine(Directory.GetCurrentDirectory(), ".link", "depth.png"), tex.EncodeToPNG());
             UnityEngine.Object.DestroyImmediate(tex);
-            string center = $"centro={LinearDepth(w / 2, h / 2):F2} m";
+            string center = $"center={LinearDepth(w / 2, h / 2):F2} m";
             string ray = "-";
             var head = Head();
             if (head != null)
                 ray = Raycast(new Ray(head.position, head.forward), 6f, out var p, out var n)
-                    ? $"raio da cabeça: {Vector3.Distance(head.position, p):F2} m em {p:F2} normal {n:F2}"
-                    : "raio da cabeça: " + LastResult;
-            return Status() + "\n" + center + "; " + ray + "\nimagem: .link/depth.png";
+                    ? $"head ray: {Vector3.Distance(head.position, p):F2} m at {p:F2} normal {n:F2}"
+                    : "head ray: " + LastResult;
+            return Status() + "\n" + center + "; " + ray + "\nimage: .link/depth.png";
         }
     }
 }

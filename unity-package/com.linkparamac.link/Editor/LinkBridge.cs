@@ -1,8 +1,8 @@
-// Link para Mac — ponte de comandos para o Unity Editor.
-// Lê arquivos .cmd em <projeto>/.link/cmd/, executa no Editor e grava a resposta em <projeto>/.link/out/<nome>.out.
-// Espelha o Console em <projeto>/.link/unity.log e o estado em <projeto>/.link/status.json.
-// Comandos: status | play | stop | refresh | menu <Caminho/Do/Menu> | scene <Assets/...unity> | runtime <manifest.json>
-//           | env <VAR> | xr-standalone | hierarchy | screenshot <arquivo.png> | sh <comando zsh> | shbg <comando zsh> | clearlog
+// Link para Mac — command bridge for the Unity Editor.
+// Reads .cmd files in <project>/.link/cmd/, runs them in the Editor and writes the response to <project>/.link/out/<name>.out.
+// Mirrors the Console to <project>/.link/unity.log and the state to <project>/.link/status.json.
+// Commands: status | play | stop | refresh | menu <Menu/Item/Path> | scene <Assets/...unity> | runtime <manifest.json>
+//           | env <VAR> | xr-standalone | hierarchy | screenshot <file.png> | sh <zsh command> | shbg <zsh command> | clearlog
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -42,14 +42,14 @@ namespace LinkParaMac.EditorTools
             Application.logMessageReceivedThreaded += OnLog;
             EditorApplication.update += Tick;
             EditorApplication.playModeStateChanged += s => { Append($"[LinkBridge] playMode: {s}"); WriteStatus(); };
-            Append($"[LinkBridge] carregado {DateTime.Now:HH:mm:ss} — Unity {Application.unityVersion}");
-            // Recompilar scripts NO MEIO do Play recarrega o domínio com o OpenXR/OVRPlugin vivo e derruba o Unity
-            // (crash em xrPollEvent → OVRPlugin, 8/nov). Com o Link: recompila só ao sair do Play.
+            Append($"[LinkBridge] loaded {DateTime.Now:HH:mm:ss} — Unity {Application.unityVersion}");
+            // Recompiling scripts IN THE MIDDLE of Play reloads the domain with OpenXR/OVRPlugin still alive and crashes Unity
+            // (crash in xrPollEvent → OVRPlugin, Nov 8). With Link: recompile only when exiting Play.
             // (Preferences > General > Script Changes While Playing; 0 = Recompile And Continue Playing)
             if (EditorPrefs.GetInt("ScriptCompilationDuringPlay", 0) == 0)
             {
                 EditorPrefs.SetInt("ScriptCompilationDuringPlay", 1); // Recompile After Finished Playing
-                Append("[LinkBridge] 'Script Changes While Playing' → Recompile After Finished Playing (evita crash do OVRPlugin)");
+                Append("[LinkBridge] 'Script Changes While Playing' → Recompile After Finished Playing (avoids the OVRPlugin crash)");
             }
             WriteStatus();
         }
@@ -79,9 +79,9 @@ namespace LinkParaMac.EditorTools
             var name = Path.GetFileNameWithoutExtension(file);
             string text;
             try { text = File.ReadAllText(file).Trim(); File.Delete(file); }
-            catch (Exception e) { Append("[LinkBridge] não li o comando: " + e.Message); return; }
+            catch (Exception e) { Append("[LinkBridge] could not read the command: " + e.Message); return; }
             string result;
-            try { result = Run(text); } catch (Exception e) { result = "ERRO: " + e; }
+            try { result = Run(text); } catch (Exception e) { result = "ERROR: " + e; }
             File.WriteAllText(Path.Combine(OutDir, name + ".out"), result ?? "");
             Append($"[LinkBridge] {name}: {text} → {(result ?? "").Split('\n')[0]}");
             WriteStatus();
@@ -95,15 +95,15 @@ namespace LinkParaMac.EditorTools
             switch (cmd)
             {
                 case "status": WriteStatus(); return File.ReadAllText(StatusFile);
-                case "play": EditorApplication.EnterPlaymode(); return "entrando em Play";
-                case "stop": EditorApplication.ExitPlaymode(); return "saindo de Play";
-                case "refresh": AssetDatabase.Refresh(); return "refresh pedido";
-                case "menu": return EditorApplication.ExecuteMenuItem(arg) ? "menu ok: " + arg : "menu não encontrado: " + arg;
-                case "scene": return "cena aberta: " + EditorSceneManager.OpenScene(arg).name;
+                case "play": EditorApplication.EnterPlaymode(); return "entering Play";
+                case "stop": EditorApplication.ExitPlaymode(); return "exiting Play";
+                case "refresh": AssetDatabase.Refresh(); return "refresh requested";
+                case "menu": return EditorApplication.ExecuteMenuItem(arg) ? "menu ok: " + arg : "menu not found: " + arg;
+                case "scene": return "scene opened: " + EditorSceneManager.OpenScene(arg).name;
                 case "runtime":
                     Environment.SetEnvironmentVariable("XR_RUNTIME_JSON", arg);
-                    return "XR_RUNTIME_JSON=" + arg + (File.Exists(arg) ? "" : "  (AVISO: arquivo não existe)");
-                case "env": return Environment.GetEnvironmentVariable(arg) ?? "(vazio)";
+                    return "XR_RUNTIME_JSON=" + arg + (File.Exists(arg) ? "" : "  (WARNING: file does not exist)");
+                case "env": return Environment.GetEnvironmentVariable(arg) ?? "(empty)";
                 case "xr-standalone": return ConfigureStandaloneXR();
                 case "hierarchy": return Hierarchy();
                 case "pos": return Pos(arg);
@@ -136,7 +136,7 @@ namespace LinkParaMac.EditorTools
                 case "mic": return LinkMic.Command(arg);
                 case "stream": return LinkStream.Command(arg);
                 case "hud": return LinkHud.Command(arg);
-                case "spectator": LinkSpectatorWindow.Open(); return "janela do espectador aberta";
+                case "spectator": LinkSpectatorWindow.Open(); return "spectator window opened";
                 case "audio":
                     if (arg == "beep") return LinkParaMac.LinkAudioTap.Beep();
                     if (arg == "mac on" || arg == "mac off")
@@ -146,20 +146,20 @@ namespace LinkParaMac.EditorTools
                     }
                     return LinkParaMac.LinkAudioTap.Status();
                 case "winshot": return WindowShot(arg);
-                case "screenshot": ScreenCapture.CaptureScreenshot(arg); return "screenshot pedido: " + arg + " (só funciona em Play)";
+                case "screenshot": ScreenCapture.CaptureScreenshot(arg); return "screenshot requested: " + arg + " (only works in Play)";
                 case "sh": return Shell(arg, false);
                 case "shbg": return Shell(arg, true);
-                case "clearlog": File.WriteAllText(LogFile, ""); return "log limpo";
-                default: return "comando desconhecido: " + cmd;
+                case "clearlog": File.WriteAllText(LogFile, ""); return "log cleared";
+                default: return "unknown command: " + cmd;
             }
         }
 
-        // ---- XR no Standalone (Editor do Mac): OpenXR loader + Meta XR Feature + perfis de controle/mãos ----
-        // Foto de uma janela do Editor (pelo título) em .link/winshot.png — lê os pixels da tela onde ela está.
+        // ---- XR on Standalone (Mac Editor): OpenXR loader + Meta XR Feature + controller/hand profiles ----
+        // Screenshot of an Editor window (by title) to .link/winshot.png — reads the screen pixels where it sits.
         static string WindowShot(string title)
         {
             var win = Resources.FindObjectsOfTypeAll<EditorWindow>().FirstOrDefault(w => w.titleContent.text == title);
-            if (win == null) return "janela não encontrada: " + title + " (abertas: " + string.Join(", ", Resources.FindObjectsOfTypeAll<EditorWindow>().Select(w => w.titleContent.text)) + ")";
+            if (win == null) return "window not found: " + title + " (open: " + string.Join(", ", Resources.FindObjectsOfTypeAll<EditorWindow>().Select(w => w.titleContent.text)) + ")";
             win.Focus();
             win.Repaint();
             Rect r = win.position;
@@ -179,33 +179,33 @@ namespace LinkParaMac.EditorTools
             var tg = BuildTargetGroup.Standalone;
             XRGeneralSettingsPerBuildTarget per;
             if (!EditorBuildSettings.TryGetConfigObject(XRGeneralSettings.k_SettingsKey, out per) || per == null)
-                return "ERRO: XRGeneralSettingsPerBuildTarget não encontrado (abra Project Settings > XR Plug-in Management uma vez)";
+                return "ERROR: XRGeneralSettingsPerBuildTarget not found (open Project Settings > XR Plug-in Management once)";
 
             if (!per.HasSettingsForBuildTarget(tg))
             {
                 Invoke(per, "CreateDefaultSettingsForBuildTarget", tg);
-                sb.AppendLine("criado XRGeneralSettings para Standalone");
+                sb.AppendLine("created XRGeneralSettings for Standalone");
             }
             var gs = per.SettingsForBuildTarget(tg);
-            if (gs == null) return sb + "ERRO: não consegui criar as settings do Standalone";
+            if (gs == null) return sb + "ERROR: could not create the Standalone settings";
             if (gs.Manager == null)
             {
                 Invoke(per, "CreateDefaultManagerSettingsForBuildTarget", tg);
                 gs = per.SettingsForBuildTarget(tg);
             }
-            if (gs.Manager == null) return sb + "ERRO: sem XRManagerSettings para Standalone";
+            if (gs.Manager == null) return sb + "ERROR: no XRManagerSettings for Standalone";
             gs.InitManagerOnStart = true;
 
             var loaderType = typeof(OpenXRLoader).FullName;
             if (gs.Manager.activeLoaders.Any(l => l != null && l.GetType().FullName == loaderType))
-                sb.AppendLine("OpenXRLoader já ativo no Standalone");
+                sb.AppendLine("OpenXRLoader already active on Standalone");
             else
                 sb.AppendLine(XRPackageMetadataStore.AssignLoader(gs.Manager, loaderType, tg)
-                    ? "OpenXRLoader atribuído ao Standalone" : "FALHA ao atribuir OpenXRLoader");
+                    ? "OpenXRLoader assigned to Standalone" : "FAILED to assign OpenXRLoader");
             EditorUtility.SetDirty(gs); EditorUtility.SetDirty(gs.Manager); EditorUtility.SetDirty(per);
 
             var oxr = OpenXRSettings.GetSettingsForBuildTargetGroup(tg);
-            if (oxr == null) sb.AppendLine("AVISO: OpenXRSettings do Standalone não encontrado");
+            if (oxr == null) sb.AppendLine("WARNING: Standalone OpenXRSettings not found");
             else
             {
                 var want = new HashSet<string> {
@@ -221,15 +221,15 @@ namespace LinkParaMac.EditorTools
                     var id = so.FindProperty("featureIdInternal")?.stringValue ?? f.GetType().Name;
                     var ui = so.FindProperty("nameUi")?.stringValue ?? f.GetType().Name;
                     if (!want.Contains(id)) continue;
-                    if (f.enabled) { sb.AppendLine("feature já ligada: " + ui); continue; }
+                    if (f.enabled) { sb.AppendLine("feature already enabled: " + ui); continue; }
                     f.enabled = true; EditorUtility.SetDirty(f);
-                    sb.AppendLine("feature ligada: " + ui + " (" + id + ")");
+                    sb.AppendLine("feature enabled: " + ui + " (" + id + ")");
                 }
                 EditorUtility.SetDirty(oxr);
             }
             PlayerSettings.runInBackground = true;
             AssetDatabase.SaveAssets();
-            sb.AppendLine("runInBackground = true; assets salvos");
+            sb.AppendLine("runInBackground = true; assets saved");
             return sb.ToString();
         }
 
@@ -240,7 +240,7 @@ namespace LinkParaMac.EditorTools
             m.Invoke(target, args);
         }
 
-        // ---- estado ----
+        // ---- state ----
         static void WriteStatus()
         {
             var sb = new StringBuilder("{\n");
@@ -266,9 +266,9 @@ namespace LinkParaMac.EditorTools
             Kv("ovrPluginVersion", Ovr("version"));
             var init = Ovr("initialized");
             Kv("ovrPluginInitialized", init);
-            // Só consulta mãos/passthrough com o OVRPlugin inicializado (senão ele loga erro no Console).
-            Kv("ovrHandTrackingEnabled", init == "True" ? Ovr("GetHandTrackingEnabled") : "(não inicializado)");
-            Kv("ovrPassthroughSupported", init == "True" ? Ovr("IsInsightPassthroughSupported") : "(não inicializado)", true);
+            // Only query hands/passthrough once OVRPlugin is initialized (otherwise it logs an error to the Console).
+            Kv("ovrHandTrackingEnabled", init == "True" ? Ovr("GetHandTrackingEnabled") : "(not initialized)");
+            Kv("ovrPassthroughSupported", init == "True" ? Ovr("IsInsightPassthroughSupported") : "(not initialized)", true);
             sb.Append("}\n");
             try { File.WriteAllText(StatusFile, sb.ToString()); } catch { }
         }
@@ -278,30 +278,30 @@ namespace LinkParaMac.EditorTools
             try
             {
                 var t = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType("OVRPlugin")).FirstOrDefault(x => x != null);
-                if (t == null) return "(OVRPlugin não carregado)";
+                if (t == null) return "(OVRPlugin not loaded)";
                 var p = t.GetProperty(member, BindingFlags.Static | BindingFlags.Public);
                 if (p != null) return p.GetValue(null)?.ToString();
                 var m = t.GetMethod(member, BindingFlags.Static | BindingFlags.Public, null, Type.EmptyTypes, null);
                 if (m != null) return m.Invoke(null, null)?.ToString();
-                return "(sem " + member + ")";
+                return "(no " + member + ")";
             }
-            catch (Exception e) { return "erro: " + e.GetBaseException().Message; }
+            catch (Exception e) { return "error: " + e.GetBaseException().Message; }
         }
 
-        // Posição/rotação no mundo de um GameObject pelo nome (ou caminho "Pai/Filho").
+        // World position/rotation of a GameObject by name (or "Parent/Child" path).
         static string Pos(string name)
         {
             var go = GameObject.Find(name);
-            if (go == null) return "não achei: " + name;
+            if (go == null) return "not found: " + name;
             var t = go.transform;
             return $"{name}: pos=({t.position.x:F3}, {t.position.y:F3}, {t.position.z:F3}) euler=({t.eulerAngles.x:F1}, {t.eulerAngles.y:F1}, {t.eulerAngles.z:F1}) active={go.activeInHierarchy}";
         }
 
-        // dump <caminho/do/GameObject> — campos serializados (Inspector) de cada componente, via SerializedObject.
+        // dump <path/to/GameObject> — serialized (Inspector) fields of each component, via SerializedObject.
         static string Dump(string path)
         {
             var go = GameObject.Find(path) ?? Resources.FindObjectsOfTypeAll<GameObject>().FirstOrDefault(g => g.scene.IsValid() && (g.name == path || FullPath(g.transform) == path));
-            if (go == null) return "não achei: " + path;
+            if (go == null) return "not found: " + path;
             var sb = new StringBuilder(FullPath(go.transform) + (go.activeInHierarchy ? "" : " (off)") + "\n");
             foreach (var c in go.GetComponents<Component>())
             {
@@ -340,7 +340,7 @@ namespace LinkParaMac.EditorTools
 
         static string FullPath(Transform t) { var p = t.name; for (var x = t.parent; x != null; x = x.parent) p = x.name + "/" + p; return p; }
 
-        // find <trecho do nome> — lista objetos da cena (qualquer profundidade) com esse trecho no nome e seus componentes.
+        // find <name fragment> — lists scene objects (any depth) whose name contains that fragment, with their components.
         static string Find(string needle)
         {
             var sb = new StringBuilder();
@@ -352,18 +352,18 @@ namespace LinkParaMac.EditorTools
                 var comps = go.GetComponents<Component>().Where(c => c != null && !(c is Transform)).Select(c => c.GetType().Name);
                 sb.AppendLine((go.activeInHierarchy ? "" : "(off) ") + path + "  [" + string.Join(", ", comps) + "]");
             }
-            return sb.Length == 0 ? "nada com '" + needle + "'" : sb.ToString();
+            return sb.Length == 0 ? "nothing matching '" + needle + "'" : sb.ToString();
         }
 
-        // props <GameObject> <TipoDoComponente> [prop1,prop2,...] — lê propriedades/campos por reflexão.
+        // props <GameObject> <ComponentType> [prop1,prop2,...] — reads properties/fields via reflection.
         static string Props(string arg)
         {
             var parts = arg.Contains("|") ? arg.Split('|') : arg.Split(' ');
-            if (parts.Length < 2) return "uso: props <GameObject> <Tipo> [p1,p2]  (use | como separador se o nome tiver espaço)";
+            if (parts.Length < 2) return "usage: props <GameObject> <Type> [p1,p2]  (use | as the separator if the name contains spaces)";
             var go = GameObject.Find(parts[0]);
-            if (go == null) return "não achei: " + parts[0];
+            if (go == null) return "not found: " + parts[0];
             var comp = go.GetComponents<Component>().FirstOrDefault(c => c != null && c.GetType().Name == parts[1]);
-            if (comp == null) return "sem componente " + parts[1] + " em " + parts[0] + " (tem: " + string.Join(", ", go.GetComponents<Component>().Select(c => c.GetType().Name)) + ")";
+            if (comp == null) return "no component " + parts[1] + " on " + parts[0] + " (has: " + string.Join(", ", go.GetComponents<Component>().Select(c => c.GetType().Name)) + ")";
             var t = comp.GetType();
             var names = parts.Length >= 3 ? parts[2].Split(',') : t.GetProperties(BindingFlags.Instance | BindingFlags.Public).Where(p => p.GetIndexParameters().Length == 0).Select(p => p.Name).ToArray();
             var sb = new StringBuilder($"{parts[0]}.{parts[1]}:\n");
@@ -373,41 +373,41 @@ namespace LinkParaMac.EditorTools
                 {
                     var pi = t.GetProperty(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                     var fi = pi == null ? t.GetField(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic) : null;
-                    object v = pi != null ? pi.GetValue(comp) : fi != null ? fi.GetValue(comp) : "(não existe)";
+                    object v = pi != null ? pi.GetValue(comp) : fi != null ? fi.GetValue(comp) : "(does not exist)";
                     sb.AppendLine($"  {n} = {v}");
                 }
-                catch (Exception e) { sb.AppendLine($"  {n} = erro: {e.GetBaseException().Message}"); }
+                catch (Exception e) { sb.AppendLine($"  {n} = error: {e.GetBaseException().Message}"); }
             }
             return sb.ToString();
         }
 
-        // enable <GameObject> <Tipo|self> <true|false> — liga/desliga um componente (Behaviour) ou o GameObject.
+        // enable <GameObject> <Type|self> <true|false> — enables/disables a component (Behaviour) or the GameObject.
         static string Enable(string arg)
         {
             var parts = arg.Contains("|") ? arg.Split('|') : arg.Split(' ');
-            if (parts.Length != 3) return "uso: enable <GameObject> <Tipo|self> <true|false>  (use | como separador se o nome tiver espaço)";
+            if (parts.Length != 3) return "usage: enable <GameObject> <Type|self> <true|false>  (use | as the separator if the name contains spaces)";
             var go = GameObject.Find(parts[0]) ?? Resources.FindObjectsOfTypeAll<GameObject>().FirstOrDefault(g => g.name == parts[0] && g.scene.IsValid());
-            if (go == null) return "não achei: " + parts[0];
+            if (go == null) return "not found: " + parts[0];
             bool on = parts[2] == "true";
             if (parts[1] == "self") { go.SetActive(on); return $"{parts[0]} active={on}"; }
             var b = go.GetComponents<Behaviour>().FirstOrDefault(c => c != null && c.GetType().Name == parts[1]);
-            if (b == null) return "sem Behaviour " + parts[1];
+            if (b == null) return "no Behaviour " + parts[1];
             b.enabled = on;
             return $"{parts[0]}.{parts[1]}.enabled={on}";
         }
 
-        // Estado das mãos (OVRHand) via reflexão, para não depender do assembly da Meta em tempo de compilação.
+        // Hand state (OVRHand) via reflection, so there is no compile-time dependency on Meta's assembly.
         static string Hands()
         {
             var sb = new StringBuilder();
             var ovrHandType = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType("OVRHand")).FirstOrDefault(x => x != null);
-            if (ovrHandType == null) return "OVRHand não carregado";
+            if (ovrHandType == null) return "OVRHand not loaded";
             var hands = UnityEngine.Object.FindObjectsByType(ovrHandType, FindObjectsSortMode.None);
-            sb.AppendLine($"OVRHand na cena: {hands.Length}");
+            sb.AppendLine($"OVRHand in scene: {hands.Length}");
             foreach (var h in hands)
             {
                 var c = (Component)h;
-                string Get(string prop) { try { return ovrHandType.GetProperty(prop)?.GetValue(h)?.ToString() ?? "?"; } catch (Exception e) { return "erro:" + e.GetBaseException().Message; } }
+                string Get(string prop) { try { return ovrHandType.GetProperty(prop)?.GetValue(h)?.ToString() ?? "?"; } catch (Exception e) { return "error:" + e.GetBaseException().Message; } }
                 sb.AppendLine($"  {c.gameObject.name}: IsTracked={Get("IsTracked")} IsDataValid={Get("IsDataValid")} IsDataHighConfidence={Get("IsDataHighConfidence")} HandConfidence={Get("HandConfidence")} IsPointerPoseValid={Get("IsPointerPoseValid")} pos=({c.transform.position.x:F2},{c.transform.position.y:F2},{c.transform.position.z:F2})");
             }
             sb.AppendLine("OVRPlugin.GetHandTrackingEnabled=" + Ovr("GetHandTrackingEnabled"));
@@ -420,7 +420,7 @@ namespace LinkParaMac.EditorTools
         {
             var sb = new StringBuilder();
             var scene = SceneManager.GetActiveScene();
-            sb.AppendLine("cena: " + scene.name + (EditorApplication.isPlaying ? " (Play)" : ""));
+            sb.AppendLine("scene: " + scene.name + (EditorApplication.isPlaying ? " (Play)" : ""));
             foreach (var go in scene.GetRootGameObjects()) Dump(go.transform, 0, sb);
             return sb.ToString();
         }
@@ -434,7 +434,7 @@ namespace LinkParaMac.EditorTools
             for (int i = 0; i < t.childCount; i++) Dump(t.GetChild(i), depth + 1, sb);
         }
 
-        // ---- shell (zsh de login, mesmo PATH do Terminal) ----
+        // ---- shell (login zsh, same PATH as Terminal) ----
         static string Shell(string command, bool background)
         {
             var id = DateTime.Now.ToString("HHmmss") + "_" + Guid.NewGuid().ToString("N").Substring(0, 6);
@@ -448,7 +448,7 @@ namespace LinkParaMac.EditorTools
                 UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = ProjectDir,
             };
             var p = Process.Start(psi);
-            if (background) return "rodando em segundo plano; saída em " + outFile;
+            if (background) return "running in background; output in " + outFile;
             var so = p.StandardOutput.ReadToEndAsync();
             var se = p.StandardError.ReadToEndAsync();
             if (!p.WaitForExit(120000)) { try { p.Kill(); } catch { } return "TIMEOUT 120 s\n" + so.Result + se.Result; }

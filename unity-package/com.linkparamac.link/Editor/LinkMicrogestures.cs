@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Link para Mac: confere os microgestos (XR_META_hand_tracking_microgestures) que chegam do Quest pelo
-// OVRPlugin, do jeito que um app lê (OVRPlugin.GetHandTrackingState → Microgesture). Comando "micro".
+// Link para Mac: checks the microgestures (XR_META_hand_tracking_microgestures) arriving from the Quest through
+// OVRPlugin, the way an app reads them (OVRPlugin.GetHandTrackingState → Microgesture). "micro" command.
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
@@ -24,8 +24,8 @@ namespace LinkParaMac.EditorTools
         static void Tick()
         {
             if (!EditorApplication.isPlaying || !OVRPlugin.initialized) return;
-            Poll(OVRPlugin.Hand.HandLeft, "esquerda", ref _lastLeft);
-            Poll(OVRPlugin.Hand.HandRight, "direita", ref _lastRight);
+            Poll(OVRPlugin.Hand.HandLeft, "left", ref _lastLeft);
+            Poll(OVRPlugin.Hand.HandRight, "right", ref _lastRight);
         }
 
         static void Poll(OVRPlugin.Hand hand, string name, ref OVRPlugin.MicrogestureType last)
@@ -36,7 +36,7 @@ namespace LinkParaMac.EditorTools
             if (g != last && g != OVRPlugin.MicrogestureType.NoGesture && g != OVRPlugin.MicrogestureType.Invalid)
             {
                 _count++;
-                string e = $"{System.DateTime.Now:HH:mm:ss.f} mão {name}: {g}";
+                string e = $"{System.DateTime.Now:HH:mm:ss.f} {name} hand: {g}";
                 _events.Add(e);
                 if (_events.Count > 12) _events.RemoveAt(0);
                 Debug.Log("[LinkMicro] " + e);
@@ -46,7 +46,7 @@ namespace LinkParaMac.EditorTools
 
         public static string Status()
         {
-            return $"Microgestos: {_count} recebido(s)" + (_events.Count > 0 ? "\n  " + string.Join("\n  ", _events) : " — faça um deslize do polegar sobre o indicador (mão relaxada, de lado)");
+            return $"Microgestures: {_count} received" + (_events.Count > 0 ? "\n  " + string.Join("\n  ", _events) : " — swipe your thumb along your index finger (hand relaxed, turned sideways)");
         }
     }
 }

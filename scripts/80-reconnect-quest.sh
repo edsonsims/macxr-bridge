@@ -1,11 +1,11 @@
 #!/bin/zsh
-# Reconecta o app OXRSys no Quest por USB com o Unity em Play:
-# acorda a tela do Mac, traz o Unity pra frente (o Editor não renderiza em segundo plano/tela apagada),
-# refaz o adb reverse e reinicia o app. Espera 5 s entre parar e abrir: o servidor só larga um cliente
-# antigo (às vezes reconectado por Wi-Fi) depois de 3 s sem tracking, e recusa o novo enquanto isso.
+# Reconnects the OXRSys app on the Quest over USB while Unity is in Play mode:
+# wakes the Mac's display, brings Unity to the front (the Editor doesn't render in the background/with the display off),
+# redoes adb reverse and restarts the app. Waits 5 s between stopping and starting: the server only drops an old
+# client (sometimes reconnected over Wi-Fi) after 3 s without tracking, and rejects the new one until then.
 set -uo pipefail
 source "$(dirname "${(%):-%x}")/common.sh"
-adb="$(adb_bin)" || { fail "adb não encontrado"; exit 1; }
+adb="$(adb_bin)" || { fail "adb not found"; exit 1; }
 caffeinate -u -t 2
 osascript -e 'tell application id "com.unity3d.UnityEditor5.x" to activate' >/dev/null 2>&1
 for p in "${LPM_PORTS[@]}"; do "$adb" reverse "tcp:${p}" "tcp:${p}" >/dev/null 2>&1; done
