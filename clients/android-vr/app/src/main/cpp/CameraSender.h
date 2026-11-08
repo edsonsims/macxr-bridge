@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 class CameraSender
@@ -20,8 +21,11 @@ public:
     static CameraSender& Get();
 
     // Transport lifecycle (owned by XrApp alongside the other sockets).
+    // Attach also starts a reader for runtime -> client messages on the same socket (audio).
     void Attach(int socket);
     void Detach();
+    // After the owner shut the socket down: wait for the reader to finish.
+    void JoinReader();
     bool IsAttached() const { return socket_.load() >= 0; }
 
     // XrApp updates the latest head pose (STAGE space) every frame.
@@ -38,6 +42,8 @@ public:
 private:
     CameraSender() = default;
     bool SendAll(const void* data, size_t size);
+    void ReaderLoop(int socket);
+    std::thread reader_;
 
     std::atomic<int> socket_{-1};
     std::mutex sendMutex_;

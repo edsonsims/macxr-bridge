@@ -28,6 +28,7 @@ enum class MsgKind : uint16_t
     Frame = 2,  // client -> runtime: a JPEG frame + pose/intrinsics
     Config = 3, // runtime -> client: enable/disable, target fps
     Depth = 4,  // client -> runtime: one eye of XR_META_environment_depth (uint16 normalized depth)
+    Audio = 5,  // runtime -> client: the app's audio mix (PCM s16 interleaved), played on the headset
 };
 
 enum PixelFormat : uint32_t
@@ -95,6 +96,17 @@ struct DepthHeader
     Pose headPose;          // head pose at displayTime (client STAGE), same space as viewPose
     Pose viewPose;          // depth view pose (client STAGE)
     Fov fov;
+};
+
+// The Editor's final audio mix, sent to the headset so the app is heard in the Quest (like Quest Link).
+struct AudioHeader
+{
+    uint32_t sampleRate;    // e.g. 48000
+    uint16_t channels;      // interleaved
+    uint16_t format;        // 1 = PCM s16
+    uint32_t frames;        // per channel
+    uint32_t payloadSize;   // frames * channels * 2 bytes follow this header
+    uint64_t sequence;      // increases by one per message (gaps = drops)
 };
 
 struct Config

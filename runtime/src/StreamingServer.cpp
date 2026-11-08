@@ -1142,6 +1142,7 @@ void StreamingServer::StopUsbTcpSockets()
         &tcpSpatialClientSocket_,
         &tcpCameraClientSocket_,
     };
+    CameraRelay::Get().SetSocket(-1);
     for (SocketHandle* socketPtr : sockets)
     {
         CloseTcpSocket(*socketPtr);
@@ -1420,6 +1421,7 @@ void StreamingServer::TcpCameraThread()
             tcpCameraClientSocket_ = clientSocket;
         }
         spdlog::info("StreamingServer: USB ADB camera client connected");
+        CameraRelay::Get().SetSocket(clientSocket);
         CameraRelay::Get().SetConnected(true);
         while (running_.load())
         {
@@ -1440,6 +1442,7 @@ void StreamingServer::TcpCameraThread()
             CameraRelay::Get().OnMessage(payload.data(), payload.size());
         }
         CameraRelay::Get().SetConnected(false);
+        CameraRelay::Get().SetSocket(-1); // before closing: the audio sender must not write to a reused fd
         bool shouldClose = true;
         {
             std::lock_guard<std::mutex> lock(tcpSocketMutex_);
@@ -2380,6 +2383,7 @@ void StreamingServer::HandleClientDisconnect()
         CloseTcpSocket(tcpVideoClientSocket_);
         CloseTcpSocket(tcpTrackingClientSocket_);
         CloseTcpSocket(tcpSpatialClientSocket_);
+        CameraRelay::Get().SetSocket(-1);
         CloseTcpSocket(tcpCameraClientSocket_);
     }
 

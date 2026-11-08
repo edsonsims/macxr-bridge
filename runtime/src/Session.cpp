@@ -1650,3 +1650,9 @@ void Session::CheckStreamingConnection()
         spdlog::info("OXRSys: Client disconnected");
     }
 }
+
+uint32_t Session::GetDisplayRefreshRateHz()
+{
+    std::shared_lock streamingLock(streamingServerMutex_);
+    return streamingServer_ ? std::max(streamingServer_->GetTargetRefreshRateHz(), 1u) : 72u;
+}

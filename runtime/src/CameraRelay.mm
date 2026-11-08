@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "CameraRelay.h"
+#include "../../common/Protocol.h"
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <ImageIO/ImageIO.h>
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <chrono>
+#include <sys/socket.h>
 #include <cstring>
 
 using namespace oxr::protocol::camera;
@@ -197,6 +200,115 @@ void CameraRelay::OnDepth(const uint8_t* payload, size_t size)
     }
 }
 
+void CameraRelay::SetSocket(int socket)
+{
+    std::lock_guard<std::mutex> lock(sendMutex_);
+    socket_ = socket;
+    if (socket < 0)
+    {
+        std::lock_guard<std::mutex> audioLock(audioMutex_);
+        audioQueue_.clear();
+    }
+}
+
+bool CameraRelay::PushAudio(const float* samples, uint32_t frames, uint32_t channels, uint32_t sampleRate)
+{
+    if (samples == nullptr || frames == 0 || channels == 0 || channels > 8) return false;
+    {
+        std::lock_guard<std::mutex> lock(sendMutex_);
+        if (socket_ < 0) return false;
+    }
+    if (!audioSenderStarted_.exchange(true))
+    {
+        audioSender_ = std::thread(&CameraRelay::AudioSenderLoop, this);
+        audioSender_.detach(); // lives as long as the runtime image
+    }
+    {
+        std::lock_guard<std::mutex> lock(audioMutex_);
+        if (channels != audioChannels_ || sampleRate != audioRate_)
+        {
+            audioQueue_.clear();
+            audioChannels_ = channels;
+            audioRate_ = sampleRate;
+            spdlog::info("CameraRelay: audio from the Editor {} Hz x{}", sampleRate, channels);
+        }
+        // Never let a stalled socket grow the queue: keep at most ~250 ms.
+        const size_t maxSamples = static_cast<size_t>(sampleRate) * channels / 4;
+        const size_t count = static_cast<size_t>(frames) * channels;
+        for (size_t i = 0; i < count; ++i)
+        {
+            const float v = std::clamp(samples[i], -1.0f, 1.0f);
+            audioQueue_.push_back(static_cast<int16_t>(v * 32767.0f));
+        }
+        if (audioQueue_.size() > maxSamples)
+        {
+            const size_t drop = (audioQueue_.size() - maxSamples) / channels * channels;
+            audioQueue_.erase(audioQueue_.begin(), audioQueue_.begin() + static_cast<std::ptrdiff_t>(drop));
+        }
+    }
+    audioCv_.notify_one();
+    return true;
+}
+
+void CameraRelay::AudioSenderLoop()
+{
+    std::vector<int16_t> chunk;
+    std::vector<uint8_t> message;
+    for (;;)
+    {
+        uint32_t channels = 0, rate = 0;
+        uint64_t sequence = 0;
+        {
+            std::unique_lock<std::mutex> lock(audioMutex_);
+            audioCv_.wait_for(lock, std::chrono::milliseconds(20), [this] { return !audioQueue_.empty(); });
+            if (audioQueue_.empty() || audioChannels_ == 0) continue;
+            channels = audioChannels_;
+            rate = audioRate_;
+            // Send whole frames, at most ~20 ms per message.
+            const size_t maxSamples = std::max<size_t>(channels, static_cast<size_t>(rate) * channels / 50);
+            const size_t take = std::min(audioQueue_.size(), maxSamples) / channels * channels;
+            if (take == 0) continue;
+            chunk.assign(audioQueue_.begin(), audioQueue_.begin() + static_cast<std::ptrdiff_t>(take));
+            audioQueue_.erase(audioQueue_.begin(), audioQueue_.begin() + static_cast<std::ptrdiff_t>(take));
+            sequence = ++audioSequence_;
+        }
+        AudioHeader ah = {};
+        ah.sampleRate = rate;
+        ah.channels = static_cast<uint16_t>(channels);
+        ah.format = 1;
+        ah.frames = static_cast<uint32_t>(chunk.size() / channels);
+        ah.payloadSize = static_cast<uint32_t>(chunk.size() * sizeof(int16_t));
+        ah.sequence = sequence;
+        MsgHeader mh = {};
+        mh.kind = MsgKind::Audio;
+        mh.payloadSize = static_cast<uint32_t>(sizeof(ah) + ah.payloadSize);
+        oxr::protocol::TcpRecordHeader rec = {};
+        rec.type = oxr::protocol::TcpRecordType::Camera;
+        rec.payloadSize = static_cast<uint32_t>(sizeof(mh) + mh.payloadSize);
+        message.resize(sizeof(rec) + rec.payloadSize);
+        uint8_t* p = message.data();
+        std::memcpy(p, &rec, sizeof(rec)); p += sizeof(rec);
+        std::memcpy(p, &mh, sizeof(mh)); p += sizeof(mh);
+        std::memcpy(p, &ah, sizeof(ah)); p += sizeof(ah);
+        std::memcpy(p, chunk.data(), ah.payloadSize);
+
+        std::lock_guard<std::mutex> lock(sendMutex_);
+        if (socket_ < 0) continue;
+        size_t sent = 0;
+        while (sent < message.size())
+        {
+            const ssize_t n = send(socket_, message.data() + sent, message.size() - sent, 0);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) break; // the camera thread notices the dead socket and detaches
+            sent += static_cast<size_t>(n);
+        }
+        if (sequence == 1 || sequence % 3000 == 0)
+        {
+            spdlog::info("CameraRelay: audio packet #{} ({} frames) sent to the headset", sequence, ah.frames);
+        }
+    }
+}
+
 DepthInfo CameraRelay::GetLatestDepth(uint16_t* dst, uint32_t dstCount, uint32_t lastFrameId)
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -285,6 +397,15 @@ int oxrsys_depth_get_latest(unsigned short* dst, unsigned int dstCount, unsigned
     oxr::protocol::camera::DepthInfo info = CameraRelay::Get().GetLatestDepth(dst, dstCount, lastFrameId);
     if (outInfo != nullptr) *outInfo = info;
     return info.valid;
+}
+
+// Unity audio thread: the Editor's final mix (interleaved float). Returns 1 while a headset is attached.
+__attribute__((visibility("default")))
+int oxrsys_audio_push(const float* samples, int frames, int channels, int sampleRate)
+{
+    if (frames <= 0 || channels <= 0 || sampleRate <= 0) return 0;
+    return CameraRelay::Get().PushAudio(samples, static_cast<uint32_t>(frames), static_cast<uint32_t>(channels),
+                                        static_cast<uint32_t>(sampleRate)) ? 1 : 0;
 }
 
 }

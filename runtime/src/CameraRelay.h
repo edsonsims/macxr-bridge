@@ -10,7 +10,10 @@
 
 #include <cstdint>
 #include <memory>
+#include <atomic>
+#include <condition_variable>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 class CameraRelay
@@ -37,8 +40,17 @@ public:
     bool GetDepthSnapshot(oxr::protocol::camera::DepthInfo& info,
                           std::shared_ptr<const std::vector<uint16_t>>& pixels, int64_t& ageNs) const;
 
+    // The camera channel's socket (StreamingServer), so the runtime can send to the headset on it.
+    // -1 when detached. The sender holds sendMutex_ while writing, so a detach never races a write.
+    void SetSocket(int socket);
+
+    // Unity's audio thread: queue the Editor's final mix (interleaved float) for the headset.
+    // Returns true while a headset is attached (the Editor then mutes the Mac's own output).
+    bool PushAudio(const float* samples, uint32_t frames, uint32_t channels, uint32_t sampleRate);
+
 private:
     CameraRelay() = default;
+    void AudioSenderLoop();
     void OnDepth(const uint8_t* payload, size_t size);
 
     // Decodes a JPEG buffer into rgba (width*height*4). Returns false on failure.
@@ -52,6 +64,18 @@ private:
     oxr::protocol::camera::Pose headFromCamera_ = {{0, 0, 0, 1}, {0, 0, 0}};
     std::shared_ptr<const std::vector<uint16_t>> depth_;
     int64_t depthReceivedNs_ = 0;
+
+    // Audio (runtime -> headset).
+    std::mutex sendMutex_;
+    int socket_ = -1;
+    std::mutex audioMutex_;
+    std::condition_variable audioCv_;
+    std::vector<int16_t> audioQueue_;     // interleaved s16 waiting to be sent
+    uint32_t audioChannels_ = 0;
+    uint32_t audioRate_ = 0;
+    uint64_t audioSequence_ = 0;
+    std::thread audioSender_;
+    std::atomic<bool> audioSenderStarted_{false};
     oxr::protocol::camera::DepthInfo depthInfo_ = {};
     uint32_t nextDepthId_ = 1;
 };

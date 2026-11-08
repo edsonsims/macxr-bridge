@@ -20,6 +20,7 @@
 #include "PassthroughFB.h"
 #include "SpatialEntity.h"
 #include "EnvironmentRaycast.h"
+#include "MinorExtensions.h"
 #include "Config.h"
 #include "RuntimeStatus.h"
 #include "TimespecConversion.h"
@@ -301,6 +302,11 @@ static std::vector<ExtensionInfo> GetSupportedExtensionInfos()
     {
         extensions.push_back({name, version});
     }
+    // Link para Mac: refresh rate, color space and passthrough preferences (MinorExtensions.cpp).
+    for (const auto& [name, version] : oxrsys::minor_extensions::Extensions())
+    {
+        extensions.push_back({name, version});
+    }
 #ifdef XR_USE_GRAPHICS_API_VULKAN
     extensions.push_back({XR_KHR_VULKAN_ENABLE_EXTENSION_NAME, XR_KHR_vulkan_enable_SPEC_VERSION});
     extensions.push_back({XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME, XR_KHR_vulkan_enable2_SPEC_VERSION});
@@ -347,6 +353,10 @@ static const char* ExtensionForFunctionName(const char* functionName)
     if (const char* raycastExtension = oxrsys::environment_raycast::ExtensionForFunction(functionName))
     {
         return raycastExtension;
+    }
+    if (const char* minorExtension = oxrsys::minor_extensions::ExtensionForFunction(functionName))
+    {
+        return minorExtension;
     }
 
     if (std::strcmp(functionName, "xrCreateHandTrackerEXT") == 0 ||
@@ -4158,6 +4168,10 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetInstanceProcAddr(
         return *function != nullptr ? XR_SUCCESS : XR_ERROR_FUNCTION_UNSUPPORTED;
     }
     if (oxrsys::environment_raycast::GetProcAddr(name, function))
+    {
+        return XR_SUCCESS;
+    }
+    if (oxrsys::minor_extensions::GetProcAddr(name, function))
     {
         return XR_SUCCESS;
     }

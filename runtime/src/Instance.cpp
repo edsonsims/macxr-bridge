@@ -2,6 +2,7 @@
 
 #include "Instance.h"
 #include "EnvironmentRaycast.h"
+#include "MinorExtensions.h"
 #include "Config.h"
 #include "Runtime.h"
 #include <algorithm>
@@ -92,6 +93,10 @@ XrResult Instance::GetSystemProperties(XrSystemId systemId, XrSystemProperties* 
                 : 0;
         }
 #endif
+        else if (oxrsys::minor_extensions::FillSystemProperties(next, IsExtensionEnabled(XR_FB_COLOR_SPACE_EXTENSION_NAME)))
+        {
+            // Link para Mac: XrSystemColorSpacePropertiesFB (MinorExtensions.cpp).
+        }
         else if (oxrsys::environment_raycast::FillSystemProperties(
                      next, IsExtensionEnabled(oxrsys::environment_raycast::RaycastExtensionName())))
         {

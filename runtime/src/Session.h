@@ -82,6 +82,9 @@ public:
     // only when something changed (plus a 1 Hz refresh so a late client catches up).
     void UpdateAppPassthrough(bool appUsesPassthrough, bool visible, float opacity, const XrColor4f& edgeColor);
 
+    // Link para Mac: refresh rate the stream runs at (negotiated with the headset), for XR_FB_display_refresh_rate.
+    uint32_t GetDisplayRefreshRateHz();
+
     // Input manager access
     InputManager& GetInputManager()
     {

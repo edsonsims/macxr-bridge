@@ -2579,6 +2579,8 @@ void XrApp::CloseCameraSocket()
     if (cameraTcpSocket_ >= 0)
     {
         SendTcpRecord(cameraTcpSocket_, protocol::TcpRecordType::Disconnect, nullptr, 0);
+        shutdown(cameraTcpSocket_, SHUT_RDWR); // wakes the reader (runtime -> client audio)
+        CameraSender::Get().JoinReader();
         close(cameraTcpSocket_);
         cameraTcpSocket_ = -1;
     }
