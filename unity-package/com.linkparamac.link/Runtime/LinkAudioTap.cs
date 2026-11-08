@@ -63,10 +63,20 @@ namespace LinkParaMac
             enabled = true;
         }
 
+        // Diagnostics: loudest sample and non-finite samples (NaN/Inf from a plugin) since the last Status().
+        static float _peak;
+        static int _nonFinite;
+
         void OnAudioFilterRead(float[] data, int channels)
         {
             Callbacks++;
             LastChannels = channels;
+            for (int i = 0; i < data.Length; i++)
+            {
+                float v = data[i];
+                if (float.IsNaN(v) || float.IsInfinity(v)) { _nonFinite++; data[i] = 0f; continue; } // never send NaN to the headset
+                if (v > _peak) _peak = v; else if (-v > _peak) _peak = -v;
+            }
             var record = RecordQueue;
             if (record != null) record.Enqueue((float[])data.Clone());
             if (_push == null || channels <= 0) return;
@@ -108,8 +118,11 @@ namespace LinkParaMac
             if (!Resolve()) return "Audio: runtime has no oxrsys_audio_push (rebuild the runtime and restart Unity)";
             var tap = FindAnyObjectByType<LinkAudioTap>();
             return $"Audio: tap={(tap != null ? tap.gameObject.name : "missing")} headset={(HeadsetAttached ? "receiving" : "not connected")} " +
-                   $"blocks={Callbacks} sent={SentCallbacks} Mac={(AlsoPlayOnMac ? "plays too" : "muted")}";
+                   $"blocks={Callbacks} sent={SentCallbacks} Mac={(AlsoPlayOnMac ? "plays too" : "muted")} " +
+                   $"peak={PeakAndReset():F3} nonFinite={_nonFinite}";
         }
+
+        static float PeakAndReset() { float p = _peak; _peak = 0f; return p; }
     }
 }
 #endif
