@@ -20,6 +20,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -30,6 +31,10 @@ public:
     ~EnvironmentDepth();
 
     static const char* ExtensionName();
+
+    // Diagnostics: the 5th image after each provider start is also written to <dir>/depth_dump.bin
+    // (DepthHeader + pixels), so the conventions can be checked offline with adb pull.
+    void SetDumpDirectory(const char* dir) { dumpDir_ = dir != nullptr ? dir : ""; }
 
     // After the session exists. Resolves the extension functions; the provider is created lazily.
     void Initialize(XrInstance instance, XrSession session, bool extensionEnabled);
@@ -72,6 +77,8 @@ private:
     bool running_ = false;
     uint32_t acquireFailures_ = 0;
     uint32_t framesSent_ = 0;
+    uint32_t framesSinceStart_ = 0;
+    std::string dumpDir_;
     std::chrono::steady_clock::time_point lastSend_{};
     std::chrono::steady_clock::time_point nextProviderAttempt_{};
 

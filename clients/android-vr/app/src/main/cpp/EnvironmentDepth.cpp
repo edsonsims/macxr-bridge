@@ -9,6 +9,7 @@
 #include <jni.h>
 #include <openxr/openxr_platform.h>
 
+#include <cstdio>
 #include <cstring>
 
 #define LOG_TAG "OXRSys-Depth"
@@ -363,6 +364,7 @@ void EnvironmentDepth::Update(XrSpace space, XrTime displayTime, const XrPosef& 
             return;
         }
         running_ = true;
+        framesSinceStart_ = 0;
         LOGI("Environment depth provider started");
     }
 
@@ -405,6 +407,17 @@ void EnvironmentDepth::Update(XrSpace space, XrTime displayTime, const XrPosef& 
     header.viewPose = ToWire(image.views[0].pose);
     header.fov = {image.views[0].fov.angleLeft, image.views[0].fov.angleRight,
                   image.views[0].fov.angleUp, image.views[0].fov.angleDown};
+    if (++framesSinceStart_ == 5 && !dumpDir_.empty())
+    {
+        const std::string path = dumpDir_ + "/depth_dump.bin";
+        if (FILE* f = std::fopen(path.c_str(), "wb"))
+        {
+            std::fwrite(&header, sizeof(header), 1, f);
+            std::fwrite(pixels.data(), sizeof(uint16_t), pixels.size(), f);
+            std::fclose(f);
+            LOGI("Depth dump written: %s", path.c_str());
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(pendingMutex_);
         pendingHeader_ = header;

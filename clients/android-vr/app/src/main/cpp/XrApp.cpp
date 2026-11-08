@@ -1083,6 +1083,10 @@ static GLuint CreateBlitProgram(const char* fragmentShaderSource)
 
 bool XrApp::Initialize(struct android_app* app)
 {
+    if (app != nullptr && app->activity != nullptr && app->activity->externalDataPath != nullptr)
+    {
+        environmentDepth_.SetDumpDirectory(app->activity->externalDataPath);
+    }
     if (!CreateInstance(app))
     {
         return false;
