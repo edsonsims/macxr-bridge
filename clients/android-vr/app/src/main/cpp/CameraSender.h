@@ -39,6 +39,14 @@ public:
     // Sends one environment-depth image (uint16 per pixel). Blocks on the socket: call from a worker thread.
     void PushDepth(const oxr::protocol::camera::DepthHeader& header, const uint16_t* pixels);
 
+    // Headset microphone chunk (PCM s16). Called from the mic thread.
+    void PushMic(const int16_t* samples, uint32_t frames, uint32_t channels, uint32_t sampleRate);
+
+    // Headset state for the developer HUD. Never blocks: skipped while a frame is being sent.
+    void PushStats(const oxr::protocol::camera::ClientStats& stats);
+    static void SetBattery(float percent, float temperatureC, bool charging);
+    static void GetBattery(float& percent, float& temperatureC, uint32_t& charging);
+
 private:
     CameraSender() = default;
     bool SendAll(const void* data, size_t size);

@@ -29,6 +29,8 @@ enum class MsgKind : uint16_t
     Config = 3, // runtime -> client: enable/disable, target fps
     Depth = 4,  // client -> runtime: one eye of XR_META_environment_depth (uint16 normalized depth)
     Audio = 5,  // runtime -> client: the app's audio mix (PCM s16 interleaved), played on the headset
+    Mic = 6,    // client -> runtime: the headset microphone (PCM s16, AudioHeader), like Quest Link's microphone
+    Stats = 7,  // client -> runtime, about once a second: headset battery, temperature, frame rate (ClientStats)
 };
 
 enum PixelFormat : uint32_t
@@ -107,6 +109,32 @@ struct AudioHeader
     uint32_t frames;        // per channel
     uint32_t payloadSize;   // frames * channels * 2 bytes follow this header
     uint64_t sequence;      // increases by one per message (gaps = drops)
+};
+
+// Headset state for the developer HUD (Link para Mac). Fields are appended only; size tells how many are present.
+struct ClientStats
+{
+    uint32_t size;               // sizeof(ClientStats) on the sender
+    float batteryPercent;        // 0..100, < 0 unknown
+    float batteryTemperatureC;   // < -100 unknown
+    uint32_t charging;           // 1 while plugged in
+    float displayFps;            // frames the client submitted during the last second
+    float videoFps;              // decoded video frames during the last second
+    uint32_t micActive;          // 1 while the headset microphone streams to the runtime
+    uint32_t transport;          // 1 Wi-Fi, 2 USB ADB, 3 USB network
+    uint32_t reserved[6];
+};
+static_assert(sizeof(ClientStats) == 56, "ClientStats layout is shared with C#");
+
+// Headset microphone forwarded by the runtime to the "Quest 3 Microphone" audio driver (UDP on localhost).
+constexpr uint16_t MIC_DRIVER_PORT = 9950;
+constexpr uint32_t MIC_DRIVER_MAGIC = 0x4d51584f; // "OXQM"
+struct MicDatagram
+{
+    uint32_t magic = MIC_DRIVER_MAGIC;
+    uint32_t sampleRate;
+    uint32_t frames;        // mono s16 samples following this header
+    uint32_t sequence;
 };
 
 struct Config

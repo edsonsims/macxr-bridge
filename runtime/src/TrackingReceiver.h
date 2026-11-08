@@ -42,6 +42,9 @@ public:
     // Inject a tracking packet from TCP (USB mode) — same effect as receiving via UDP
     void InjectPacket(const uint8_t* data, size_t size);
 
+    // Link para Mac: a packet from a recorded session (TrackingTape), stamped with the current time.
+    void InjectReplay(const uint8_t* data, size_t size);
+
     // A UDP tracking datagram. It is stored only when its source is the connected client's
     // address (see SetClientAddress); any other sender is ignored.
     void ReceivePacket(const uint8_t* data, size_t size, const sockaddr_in& source);

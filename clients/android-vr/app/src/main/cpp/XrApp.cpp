@@ -3,6 +3,7 @@
 #include "XrApp.h"
 #include "SpatialPermission.h"
 #include "UsbNetworkLink.h"
+#include "MicCapture.h"
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>
@@ -2554,7 +2555,7 @@ void XrApp::CloseControlSocket()
     }
 }
 
-bool XrApp::OpenUsbSpatialSocket(uint16_t spatialPort)
+bool XrApp::OpenUsbSpatialSocket(uint16_t spatialPort, const char* host)
 {
     CloseSpatialSocket();
     if (spatialPort == 0)
@@ -2573,17 +2574,19 @@ bool XrApp::OpenUsbSpatialSocket(uint16_t spatialPort)
     sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(spatialPort);
-    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    inet_pton(AF_INET, host, &addr.sin_addr);
+    // Link para Mac: over Wi-Fi / USB network the channel goes straight to the Mac (like Air Link).
+    if (std::strcmp(host, "127.0.0.1") != 0) usb_network::BindSocketForServer(spatialTcpSocket_, host);
 
     if (connect(spatialTcpSocket_, (sockaddr*)&addr, sizeof(addr)) < 0)
     {
-        LOGW("USB TCP spatial socket unavailable on port %u", spatialPort);
+        LOGW("TCP spatial socket unavailable on %s:%u", host, spatialPort);
         close(spatialTcpSocket_);
         spatialTcpSocket_ = -1;
         return false;
     }
 
-    LOGI("USB TCP spatial channel connected on port %u", spatialPort);
+    LOGI("TCP spatial channel connected to %s:%u", host, spatialPort);
     spatialBridge_.Start(spatialTcpSocket_, oxr::spatial_permission::IsSceneGranted());
     return true;
 }
@@ -2599,7 +2602,7 @@ void XrApp::CloseSpatialSocket()
     }
 }
 
-bool XrApp::OpenUsbCameraSocket(uint16_t cameraPort)
+bool XrApp::OpenUsbCameraSocket(uint16_t cameraPort, const char* host)
 {
     CloseCameraSocket();
     if (cameraPort == 0) return false;
@@ -2609,21 +2612,24 @@ bool XrApp::OpenUsbCameraSocket(uint16_t cameraPort)
     sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(cameraPort);
-    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    inet_pton(AF_INET, host, &addr.sin_addr);
+    if (std::strcmp(host, "127.0.0.1") != 0) usb_network::BindSocketForServer(cameraTcpSocket_, host);
     if (connect(cameraTcpSocket_, (sockaddr*)&addr, sizeof(addr)) < 0)
     {
-        LOGW("USB TCP camera socket unavailable on port %u", cameraPort);
+        LOGW("TCP camera socket unavailable on %s:%u", host, cameraPort);
         close(cameraTcpSocket_);
         cameraTcpSocket_ = -1;
         return false;
     }
-    LOGI("USB TCP camera channel connected on port %u", cameraPort);
+    LOGI("TCP camera channel connected to %s:%u", host, cameraPort);
     CameraSender::Get().Attach(cameraTcpSocket_);
+    MicCapture::Get().Start(); // headset microphone -> Mac, like Quest Link
     return true;
 }
 
 void XrApp::CloseCameraSocket()
 {
+    MicCapture::Get().Stop();
     CameraSender::Get().Detach();
     if (cameraTcpSocket_ >= 0)
     {
@@ -3001,6 +3007,12 @@ void XrApp::ConfigureServerConnection(const protocol::ServerAnnounce& server,
         setsockopt(controlTcpSocket_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
         OpenUsbSpatialSocket(serverSpatialPort_);
         OpenUsbCameraSocket(oxr::protocol::CAMERA_PORT);
+    }
+    else if (!usbAdb)
+    {
+        // Link para Mac: room, anchors, camera, depth, audio and microphone over Wi-Fi too (Air Link parity).
+        OpenUsbSpatialSocket(serverSpatialPort_, serverIp);
+        OpenUsbCameraSocket(oxr::protocol::CAMERA_PORT, serverIp);
     }
 
     RefreshCurrentDisplayRate("ClientConnect", true);
@@ -4110,6 +4122,7 @@ void XrApp::RunFrame()
 
         // Render to swapchains
         const bool renderedVideo = RenderFrame(frameState.predictedDisplayTime);
+        SendClientStatsIfDue(renderedVideo);
         bool submitPassthroughLayer = false;
         if (renderedVideo)
         {
@@ -5982,3 +5995,25 @@ void XrApp::Shutdown()
 }
 
 } // namespace oxr
+
+// Link para Mac: headset state for the developer HUD in the Editor (about once a second).
+void oxr::XrApp::SendClientStatsIfDue(bool renderedVideo)
+{
+    ++statsDisplayFrames_;
+    if (renderedVideo) ++statsVideoFrames_;
+    const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (statsWindowStartNs_ == 0) { statsWindowStartNs_ = now; return; }
+    const double seconds = (now - statsWindowStartNs_) / 1e9;
+    if (seconds < 1.0) return;
+    oxr::protocol::camera::ClientStats stats = {};
+    stats.size = sizeof(stats);
+    CameraSender::GetBattery(stats.batteryPercent, stats.batteryTemperatureC, stats.charging);
+    stats.displayFps = static_cast<float>(statsDisplayFrames_ / seconds);
+    stats.videoFps = static_cast<float>(statsVideoFrames_ / seconds);
+    stats.micActive = MicCapture::Get().IsActive() ? 1u : 0u;
+    stats.transport = transportMode_ == TransportMode::UsbAdbTcp ? 2u : transportMode_ == TransportMode::UsbNetworkUdp ? 3u : 1u;
+    CameraSender::Get().PushStats(stats);
+    statsWindowStartNs_ = now;
+    statsDisplayFrames_ = statsVideoFrames_ = 0;
+}

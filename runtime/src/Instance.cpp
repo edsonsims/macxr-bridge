@@ -3,6 +3,7 @@
 #include "Instance.h"
 #include "EnvironmentRaycast.h"
 #include "MinorExtensions.h"
+#include "MicRelay.h"
 #include "Config.h"
 #include "Runtime.h"
 #include <algorithm>
@@ -19,11 +20,13 @@ Instance::Instance(XrVersion apiVersion, const std::vector<std::string>& enabled
 {
     Runtime::Get().RegisterHandle(handle_, this);
     Runtime::Get().SetInstance(this);
+    MicRelay::Get().OnInstanceCreated(); // Link para Mac: the Quest microphone is the default input while the app runs
     spdlog::info("OXRSys: Instance created");
 }
 
 Instance::~Instance()
 {
+    MicRelay::Get().OnInstanceDestroyed();
     Runtime::Get().SetInstance(nullptr);
     Runtime::Get().RemoveHandle(handle_);
     spdlog::info("OXRSys: Instance destroyed");

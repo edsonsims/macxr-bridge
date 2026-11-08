@@ -71,6 +71,7 @@ add_library(oxrsys_android SHARED
     CameraSender.cpp
     EnvironmentDepth.cpp
     AudioPlayer.cpp
+    MicCapture.cpp
 )
 
 target_include_directories(oxrsys_android PRIVATE

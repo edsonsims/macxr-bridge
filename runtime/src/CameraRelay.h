@@ -48,6 +48,14 @@ public:
     // Returns true while a headset is attached (the Editor then mutes the Mac's own output).
     bool PushAudio(const float* samples, uint32_t frames, uint32_t channels, uint32_t sampleRate);
 
+    // Headset state sent by the client about once a second (developer HUD). False before the first one.
+    bool GetClientStats(oxr::protocol::camera::ClientStats& stats, float& ageSeconds) const;
+
+    // Session replay (Unity's LinkSession): recorded depth replaces the headset's, so the runtime's environment
+    // raycast (XR_META_environment_raycast) answers from the recording. While on, live depth is ignored.
+    void SetDepthReplay(bool on);
+    void InjectDepth(const oxr::protocol::camera::DepthInfo& info, const uint16_t* pixels, uint32_t count);
+
 private:
     CameraRelay() = default;
     void AudioSenderLoop();
@@ -77,5 +85,8 @@ private:
     std::thread audioSender_;
     std::atomic<bool> audioSenderStarted_{false};
     oxr::protocol::camera::DepthInfo depthInfo_ = {};
+    oxr::protocol::camera::ClientStats clientStats_ = {};
+    int64_t clientStatsNs_ = 0;
+    std::atomic<bool> depthReplay_{false};
     uint32_t nextDepthId_ = 1;
 };

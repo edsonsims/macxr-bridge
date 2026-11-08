@@ -49,6 +49,25 @@ public class NativeActivity extends android.app.NativeActivity
 
     private static native void nativeSetUsbNetwork(long networkHandle);
     private static native void nativeSetScenePermission(boolean granted);
+    // Link para Mac: headset microphone and battery for the macOS runtime.
+    private static native void nativeSetMicPermission(boolean granted);
+    private static native void nativeSetBattery(float percent, float temperatureC, boolean charging);
+    private static final String MIC_PERMISSION = android.Manifest.permission.RECORD_AUDIO;
+    private static final int MIC_PERMISSION_REQUEST = 0x5C31;
+    private boolean batteryReceiverRegistered;
+    private final BroadcastReceiver batteryReceiver = new BroadcastReceiver()
+    {
+        @Override
+        public void onReceive(Context context, Intent intent)
+        {
+            int level = intent.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1);
+            int scale = intent.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100);
+            int tenthsC = intent.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, -10000);
+            int plugged = intent.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0);
+            float percent = level >= 0 && scale > 0 ? 100f * level / scale : -1f;
+            nativeSetBattery(percent, tenthsC / 10f, plugged != 0);
+        }
+    };
 
     // Link para Mac: Scene (room) data for the macOS runtime needs this runtime permission.
     private static final String SCENE_PERMISSION = "com.oculus.permission.USE_SCENE";
@@ -131,6 +150,21 @@ public class NativeActivity extends android.app.NativeActivity
         requestScenePermission();
         headsetCamera = new HeadsetCamera(this);
         requestCameraPermission();
+        Intent battery = registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        batteryReceiverRegistered = true;
+        if (battery != null) batteryReceiver.onReceive(this, battery);
+    }
+
+    // Asked after the camera (one system dialog at a time).
+    private void requestMicPermission()
+    {
+        if (checkSelfPermission(MIC_PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED)
+        {
+            nativeSetMicPermission(true);
+            return;
+        }
+        Log.i(TAG, "Requesting microphone permission");
+        requestPermissions(new String[] {MIC_PERMISSION}, MIC_PERMISSION_REQUEST);
     }
 
     private void requestCameraPermission()
@@ -139,6 +173,7 @@ public class NativeActivity extends android.app.NativeActivity
         {
             Log.i(TAG, "Headset camera permission already granted");
             startHeadsetCamera();
+            requestMicPermission();
             return;
         }
         Log.i(TAG, "Requesting headset camera permission");
@@ -176,6 +211,14 @@ public class NativeActivity extends android.app.NativeActivity
             boolean ok = permissions.length > 0 && grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
             Log.i(TAG, "Headset camera permission " + (ok ? "granted" : "denied"));
             if (ok) startHeadsetCamera();
+            requestMicPermission();
+            return;
+        }
+        if (requestCode == MIC_PERMISSION_REQUEST)
+        {
+            boolean ok = grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            Log.i(TAG, "Microphone permission " + (ok ? "granted" : "denied"));
+            nativeSetMicPermission(ok);
             return;
         }
         if (requestCode != SCENE_PERMISSION_REQUEST)
@@ -240,6 +283,7 @@ public class NativeActivity extends android.app.NativeActivity
             nativeSetUsbNetwork(0);
         }
         if (headsetCamera != null) { headsetCamera.stop(); headsetCamera = null; }
+        if (batteryReceiverRegistered) { unregisterReceiver(batteryReceiver); batteryReceiverRegistered = false; }
         super.onDestroy();
     }
 

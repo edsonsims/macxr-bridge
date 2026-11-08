@@ -25,6 +25,8 @@ add_library(oxrsys_runtime SHARED
     src/EnvironmentRaycast.cpp
     src/MinorExtensions.cpp
     src/CameraRelay.mm
+    src/MicRelay.mm
+    src/TrackingTape.cpp
     src/StreamingServer.cpp
     src/PacketPacer.cpp
     src/TrackingReceiver.cpp
@@ -74,6 +76,8 @@ target_link_libraries(oxrsys_runtime PRIVATE
     "-framework IOSurface"
     "-framework CoreGraphics"
     "-framework ImageIO"
+    "-framework CoreAudio"
+    "-framework CoreFoundation"
 )
 
 # Only export the negotiation entry point.

@@ -216,6 +216,48 @@ void CameraSender::PushDepth(const cam::DepthHeader& header, const uint16_t* pix
     }
 }
 
+void CameraSender::PushMic(const int16_t* samples, uint32_t frames, uint32_t channels, uint32_t sampleRate)
+{
+    if (socket_.load() < 0 || samples == nullptr || frames == 0) return;
+    static uint64_t sequence = 0;
+    cam::AudioHeader ah = {};
+    ah.sampleRate = sampleRate;
+    ah.channels = static_cast<uint16_t>(channels);
+    ah.format = 1;
+    ah.frames = frames;
+    ah.payloadSize = frames * channels * static_cast<uint32_t>(sizeof(int16_t));
+    ah.sequence = ++sequence;
+    std::lock_guard<std::mutex> lock(sendMutex_);
+    if (socket_.load() < 0) return;
+    protocol::TcpRecordHeader rec = {};
+    rec.type = protocol::TcpRecordType::Camera;
+    rec.payloadSize = static_cast<uint32_t>(sizeof(cam::MsgHeader) + sizeof(ah) + ah.payloadSize);
+    cam::MsgHeader mh = {}; mh.kind = cam::MsgKind::Mic;
+    mh.payloadSize = static_cast<uint32_t>(sizeof(ah) + ah.payloadSize);
+    if (!(SendAll(&rec, sizeof(rec)) && SendAll(&mh, sizeof(mh)) && SendAll(&ah, sizeof(ah)) && SendAll(samples, ah.payloadSize)))
+    {
+        LOGW("Mic send failed; detaching");
+        socket_.store(-1);
+        helloSent_ = false;
+    }
+}
+
+void CameraSender::PushStats(const cam::ClientStats& stats)
+{
+    if (socket_.load() < 0) return;
+    std::unique_lock<std::mutex> lock(sendMutex_, std::try_to_lock);
+    if (!lock.owns_lock() || socket_.load() < 0) return;
+    protocol::TcpRecordHeader rec = {};
+    rec.type = protocol::TcpRecordType::Camera;
+    rec.payloadSize = static_cast<uint32_t>(sizeof(cam::MsgHeader) + sizeof(stats));
+    cam::MsgHeader mh = {}; mh.kind = cam::MsgKind::Stats; mh.payloadSize = sizeof(stats);
+    if (!(SendAll(&rec, sizeof(rec)) && SendAll(&mh, sizeof(mh)) && SendAll(&stats, sizeof(stats))))
+    {
+        socket_.store(-1);
+        helloSent_ = false;
+    }
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_oculus_HeadsetCamera_nativePushCameraFrame(JNIEnv* env, jclass, jbyteArray jpeg, jint length,
                                                     jint width, jint height,
@@ -233,4 +275,31 @@ Java_com_oculus_HeadsetCamera_nativePushCameraFrame(JNIEnv* env, jclass, jbyteAr
     CameraSender::Get().PushFrame(reinterpret_cast<const uint8_t*>(data), length, width, height,
                                   fx, fy, cx, cy, headFromCamera, timestampNs);
     env->ReleaseByteArrayElements(jpeg, data, JNI_ABORT);
+}
+
+namespace
+{
+std::atomic<float> gBatteryPercent{-1.0f};
+std::atomic<float> gBatteryTemperature{-1000.0f};
+std::atomic<uint32_t> gBatteryCharging{0};
+}
+
+void CameraSender::SetBattery(float percent, float temperatureC, bool charging)
+{
+    gBatteryPercent.store(percent);
+    gBatteryTemperature.store(temperatureC);
+    gBatteryCharging.store(charging ? 1u : 0u);
+}
+
+void CameraSender::GetBattery(float& percent, float& temperatureC, uint32_t& charging)
+{
+    percent = gBatteryPercent.load();
+    temperatureC = gBatteryTemperature.load();
+    charging = gBatteryCharging.load();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oculus_NativeActivity_nativeSetBattery(JNIEnv*, jobject, jfloat percent, jfloat temperatureC, jboolean charging)
+{
+    CameraSender::SetBattery(percent, temperatureC, charging == JNI_TRUE);
 }

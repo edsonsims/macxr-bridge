@@ -108,9 +108,13 @@ private:
     bool OpenControlSocket(const char* serverIp);
     bool OpenUsbControlSocket();
     void CloseControlSocket();
-    bool OpenUsbSpatialSocket(uint16_t spatialPort);
+    bool OpenUsbSpatialSocket(uint16_t spatialPort, const char* host = "127.0.0.1");
     void CloseSpatialSocket();
-    bool OpenUsbCameraSocket(uint16_t cameraPort);
+    bool OpenUsbCameraSocket(uint16_t cameraPort, const char* host = "127.0.0.1");
+    void SendClientStatsIfDue(bool renderedVideo);
+    int64_t statsWindowStartNs_ = 0;
+    uint32_t statsDisplayFrames_ = 0;
+    uint32_t statsVideoFrames_ = 0;
     void CloseCameraSocket();
     void SendClientConnect(const char* serverIp);
     void StartControlReceiver();

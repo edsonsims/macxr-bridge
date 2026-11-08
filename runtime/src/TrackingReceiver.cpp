@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "TrackingReceiver.h"
+#include "TrackingTape.h"
 
 #include <spdlog/spdlog.h>
 
@@ -163,6 +164,7 @@ TrackingReceiver::~TrackingReceiver()
 
 bool TrackingReceiver::Start()
 {
+    oxrsys::tracking_tape::AttachReceiver(this);
     socket_ = oxrsys::runtime_socket::Create(AF_INET, SOCK_DGRAM, 0);
     if (!oxrsys::runtime_socket::IsValid(socket_))
     {
@@ -195,6 +197,7 @@ bool TrackingReceiver::Start()
 
 void TrackingReceiver::Stop()
 {
+    oxrsys::tracking_tape::DetachReceiver(this);
     running_.store(false);
 
     oxrsys::runtime_socket::Close(socket_);
@@ -271,11 +274,34 @@ void TrackingReceiver::InjectPacket(const uint8_t* data, size_t size)
     StorePayload(data, size, nullptr);
 }
 
+void TrackingReceiver::InjectReplay(const uint8_t* data, size_t size)
+{
+    if (data == nullptr || size < kMinTrackingPacketSize)
+    {
+        return;
+    }
+    oxr::protocol::TrackingPacket packet = {};
+    memcpy(&packet, data, std::min(size, sizeof(packet)));
+    ClearFieldsBeyond(packet, size);
+    const int64_t now = SteadyClockNowNs();
+    packet.timestampNs = now; // a monotonic clock, so seeks and loops are not dropped as "reordered"
+    StorePacket(packet, now, nullptr);
+}
+
 void TrackingReceiver::StorePayload(const uint8_t* data, size_t size, const uint32_t* udpSource)
 {
     if (data == nullptr || size < kMinTrackingPacketSize)
     {
         return;
+    }
+    // Link para Mac: session recording / replay (TrackingTape).
+    if (oxrsys::tracking_tape::Replaying())
+    {
+        return;
+    }
+    if (oxrsys::tracking_tape::Recording() && (udpSource == nullptr || *udpSource == clientAddress_.load()))
+    {
+        oxrsys::tracking_tape::Record(data, size);
     }
 
     oxr::protocol::TrackingPacket packet = {};

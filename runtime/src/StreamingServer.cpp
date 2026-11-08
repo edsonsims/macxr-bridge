@@ -433,7 +433,21 @@ void JoinWorkerThread(std::thread& worker, const char* name)
     }
 }
 
+SocketHandle CreateListener(uint16_t port, uint32_t address);
+
 SocketHandle CreateLoopbackListener(uint16_t port)
+{
+    return CreateListener(port, INADDR_LOOPBACK);
+}
+
+// Link para Mac: the spatial and camera channels also accept the headset over Wi-Fi (like Air Link),
+// so they listen on every interface; AcceptLocalWithTimeout keeps out anything beyond the local network.
+SocketHandle CreateLanListener(uint16_t port)
+{
+    return CreateListener(port, INADDR_ANY);
+}
+
+SocketHandle CreateListener(uint16_t port, uint32_t address)
 {
     SocketHandle listenSocket = oxrsys::runtime_socket::Create(AF_INET, SOCK_STREAM, 0);
     if (!oxrsys::runtime_socket::IsValid(listenSocket))
@@ -446,7 +460,7 @@ SocketHandle CreateLoopbackListener(uint16_t port)
     sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_addr.s_addr = htonl(address);
     if (bind(listenSocket, (sockaddr*)&addr, sizeof(addr)) < 0)
     {
         oxrsys::runtime_socket::Close(listenSocket);
@@ -474,6 +488,28 @@ SocketHandle AcceptWithTimeout(SocketHandle listenSocket)
     if (oxrsys::runtime_socket::IsValid(clientSocket))
     {
         ConfigureTcpSocket(clientSocket);
+    }
+    return clientSocket;
+}
+
+// Loopback (adb reverse) or a private / link-local IPv4 address (the headset on Wi-Fi or the USB network).
+bool IsLocalPeer(SocketHandle socket)
+{
+    sockaddr_in peer = {};
+    socklen_t length = sizeof(peer);
+    if (getpeername(socket, reinterpret_cast<sockaddr*>(&peer), &length) != 0 || peer.sin_family != AF_INET) return false;
+    const uint32_t a = ntohl(peer.sin_addr.s_addr);
+    return (a >> 24) == 127 || (a >> 24) == 10 || (a >> 20) == 0xAC1 || (a >> 16) == 0xC0A8 || (a >> 16) == 0xA9FE;
+}
+
+SocketHandle AcceptLocalWithTimeout(SocketHandle listenSocket)
+{
+    SocketHandle clientSocket = AcceptWithTimeout(listenSocket);
+    if (oxrsys::runtime_socket::IsValid(clientSocket) && !IsLocalPeer(clientSocket))
+    {
+        spdlog::warn("StreamingServer: refused a spatial/camera connection from outside the local network");
+        oxrsys::runtime_socket::Close(clientSocket);
+        return oxrsys::runtime_socket::InvalidSocket;
     }
     return clientSocket;
 }
@@ -1075,8 +1111,8 @@ bool StreamingServer::StartUsbTcpListeners()
     tcpControlListenSocket_ = CreateLoopbackListener(oxr::protocol::CONTROL_PORT);
     tcpVideoListenSocket_ = CreateLoopbackListener(oxr::protocol::VIDEO_PORT);
     tcpTrackingListenSocket_ = CreateLoopbackListener(oxr::protocol::TRACKING_PORT);
-    tcpSpatialListenSocket_ = CreateLoopbackListener(oxr::protocol::SPATIAL_PORT);
-    tcpCameraListenSocket_ = CreateLoopbackListener(oxr::protocol::CAMERA_PORT);
+    tcpSpatialListenSocket_ = CreateLanListener(oxr::protocol::SPATIAL_PORT);
+    tcpCameraListenSocket_ = CreateLanListener(oxr::protocol::CAMERA_PORT);
     const bool spatialBackendAttached = false;
     if (!oxrsys::streaming_transport::UsbAdbTcpListenersReady(
             oxrsys::runtime_socket::IsValid(tcpControlListenSocket_),
@@ -1337,7 +1373,7 @@ void StreamingServer::TcpSpatialThread()
 {
     while (running_.load() && usbAdbEnabled_)
     {
-        SocketHandle clientSocket = AcceptWithTimeout(tcpSpatialListenSocket_);
+        SocketHandle clientSocket = AcceptLocalWithTimeout(tcpSpatialListenSocket_);
         if (!oxrsys::runtime_socket::IsValid(clientSocket))
         {
             continue;
@@ -1407,7 +1443,7 @@ void StreamingServer::TcpCameraThread()
 {
     while (running_.load() && usbAdbEnabled_)
     {
-        SocketHandle clientSocket = AcceptWithTimeout(tcpCameraListenSocket_);
+        SocketHandle clientSocket = AcceptLocalWithTimeout(tcpCameraListenSocket_);
         if (!oxrsys::runtime_socket::IsValid(clientSocket))
         {
             continue;

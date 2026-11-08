@@ -201,6 +201,7 @@ add_executable(oxrsys_runtime_tests
     clients/android-vr/app/src/main/cpp/QuestShellInteraction.cpp
     runtime/src/InputManager.cpp
     runtime/src/TrackingReceiver.cpp
+    runtime/src/TrackingTape.cpp
     runtime/src/Config.cpp
     runtime/src/RuntimePlatform.cpp
     runtime/src/RuntimeSockets.cpp

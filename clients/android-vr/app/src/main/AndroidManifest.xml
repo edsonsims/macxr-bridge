@@ -17,6 +17,8 @@
     <uses-permission android:name="com.oculus.permission.USE_SCENE" />
     <!-- Link para Mac: passthrough camera relay (PCA) -->
     <uses-permission android:name="horizonos.permission.HEADSET_CAMERA" />
+    <!-- Link para Mac: the headset microphone is forwarded to the Mac -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!-- OpenGL ES 3.1 required for Quest -->
     <uses-feature

@@ -2,6 +2,8 @@
 
 #include "CameraRelay.h"
 #include "../../common/Protocol.h"
+#include "Config.h"
+#include "MicRelay.h"
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <ImageIO/ImageIO.h>
@@ -134,6 +136,21 @@ void CameraRelay::OnMessage(const uint8_t* data, size_t size)
         OnDepth(payload, payloadSize);
         return;
     }
+    if (header.kind == MsgKind::Mic)
+    {
+        MicRelay::Get().OnMic(payload, payloadSize);
+        return;
+    }
+    if (header.kind == MsgKind::Stats)
+    {
+        ClientStats stats = {};
+        std::memcpy(&stats, payload, std::min(payloadSize, sizeof(stats)));
+        std::lock_guard<std::mutex> lock(mutex_);
+        clientStats_ = stats;
+        clientStatsNs_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        return;
+    }
     if (header.kind != MsgKind::Frame || payloadSize < sizeof(FrameHeader)) return;
     FrameHeader fh = {};
     std::memcpy(&fh, payload, sizeof(fh));
@@ -168,9 +185,31 @@ void CameraRelay::OnMessage(const uint8_t* data, size_t size)
     info_.captureTimeNs = fh.captureTimeNs;
 }
 
+void CameraRelay::SetDepthReplay(bool on)
+{
+    depthReplay_.store(on);
+    spdlog::info("CameraRelay: depth from {}", on ? "a recorded session" : "the headset");
+}
+
+void CameraRelay::InjectDepth(const DepthInfo& info, const uint16_t* pixels, uint32_t count)
+{
+    const size_t n = static_cast<size_t>(info.width) * info.height;
+    if (pixels == nullptr || n == 0 || count < n) return;
+    auto depth = std::make_shared<std::vector<uint16_t>>(pixels, pixels + n);
+    const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::lock_guard<std::mutex> lock(mutex_);
+    depth_ = std::move(depth);
+    depthReceivedNs_ = now;
+    depthInfo_ = info;
+    depthInfo_.valid = 1;
+    depthInfo_.frameId = nextDepthId_++;
+}
+
 void CameraRelay::OnDepth(const uint8_t* payload, size_t size)
 {
     if (size < sizeof(DepthHeader)) return;
+    if (depthReplay_.load()) return; // a recorded session is playing
     DepthHeader dh = {};
     std::memcpy(&dh, payload, sizeof(dh));
     const size_t pixels = static_cast<size_t>(dh.width) * dh.height;
@@ -367,6 +406,17 @@ FrameInfo CameraRelay::GetLatest(uint8_t* dst, uint32_t dstCapacity, uint32_t la
     return out;
 }
 
+bool CameraRelay::GetClientStats(ClientStats& stats, float& ageSeconds) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (clientStatsNs_ == 0) return false;
+    stats = clientStats_;
+    const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    ageSeconds = static_cast<float>((now - clientStatsNs_) / 1e9);
+    return true;
+}
+
 // ─── C export for Unity (P/Invoke) ───────────────────────────────────────────
 
 extern "C" {
@@ -397,6 +447,38 @@ int oxrsys_depth_get_latest(unsigned short* dst, unsigned int dstCount, unsigned
     oxr::protocol::camera::DepthInfo info = CameraRelay::Get().GetLatestDepth(dst, dstCount, lastFrameId);
     if (outInfo != nullptr) *outInfo = info;
     return info.valid;
+}
+
+// Headset battery/temperature/frame rate for the developer HUD. Returns 1 when the client sent any.
+__attribute__((visibility("default")))
+int oxrsys_client_stats_get(oxr::protocol::camera::ClientStats* out, float* ageSeconds)
+{
+    if (out == nullptr) return 0;
+    float age = 0.0f;
+    if (!CameraRelay::Get().GetClientStats(*out, age)) return 0;
+    if (ageSeconds != nullptr) *ageSeconds = age;
+    return 1;
+}
+
+// Session replay: 1 = depth comes only from oxrsys_depth_inject (live depth ignored), 0 = back to the headset.
+__attribute__((visibility("default")))
+void oxrsys_depth_replay_mode(int on)
+{
+    CameraRelay::Get().SetDepthReplay(on != 0);
+}
+
+// One recorded depth frame (info in client STAGE, as oxrsys_depth_get_latest returns it).
+__attribute__((visibility("default")))
+void oxrsys_depth_inject(const unsigned short* pixels, unsigned int count, const oxr::protocol::camera::DepthInfo* info)
+{
+    if (info != nullptr) CameraRelay::Get().InjectDepth(*info, pixels, count);
+}
+
+// Path of runtime_status.json (stream stats: bitrate, latencies, encoder) written about once a second.
+__attribute__((visibility("default")))
+const char* oxrsys_runtime_status_path()
+{
+    return ::Config::Get().runtimeStatusPath.c_str();
 }
 
 // Unity audio thread: the Editor's final mix (interleaved float). Returns 1 while a headset is attached.
