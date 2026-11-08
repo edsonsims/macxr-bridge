@@ -53,6 +53,13 @@
         <meta-data
             android:name="com.oculus.supportedDevices"
             android:value="all" />
+        <!-- Link para Mac: same hand tracking setup as a Meta XR app (microgestures need hand tracking v2). -->
+        <meta-data
+            android:name="com.oculus.handtracking.frequency"
+            android:value="HIGH" />
+        <meta-data
+            android:name="com.oculus.handtracking.version"
+            android:value="V2.0" />
 
         <activity
             android:name="com.oculus.NativeActivity"

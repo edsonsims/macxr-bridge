@@ -5739,7 +5739,14 @@ protocol::TrackingPacket XrApp::BuildTrackingPacket(XrTime predictedDisplayTime)
                 getInfo.action = microgestureActions_[g];
                 getInfo.subactionPath = handPaths_[hand];
                 XrActionStateBoolean state = {XR_TYPE_ACTION_STATE_BOOLEAN};
-                if (XR_SUCCEEDED(xrGetActionStateBoolean(session_, &getInfo, &state)) && state.isActive &&
+                const XrResult stateResult = xrGetActionStateBoolean(session_, &getInfo, &state);
+                static uint32_t microLog = 0;
+                if (hand == 0 && g == 0 && (++microLog % 600) == 1)
+                {
+                    LOGI("Microgesture state: result=%d active=%d current=%d (available=%d)", stateResult,
+                         state.isActive, state.currentState, microgesturesAvailable_ ? 1 : 0);
+                }
+                if (XR_SUCCEEDED(stateResult) && state.isActive &&
                     state.currentState && state.changedSinceLastSync)
                 {
                     microgestureUntil_[hand][g] = now + std::chrono::milliseconds(120);
