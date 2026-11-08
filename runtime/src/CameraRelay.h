@@ -9,6 +9,7 @@
 #include "../../common/CameraProtocol.h"
 
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -31,6 +32,11 @@ public:
     // lastFrameId and dstCount (in pixels) is large enough; dst == nullptr is a probe.
     oxr::protocol::camera::DepthInfo GetLatestDepth(uint16_t* dst, uint32_t dstCount, uint32_t lastFrameId);
 
+    // Latest depth without copying, for runtime-side ray casts (XR_META_environment_raycast).
+    // ageNs = time since it arrived. False when no depth is available.
+    bool GetDepthSnapshot(oxr::protocol::camera::DepthInfo& info,
+                          std::shared_ptr<const std::vector<uint16_t>>& pixels, int64_t& ageNs) const;
+
 private:
     CameraRelay() = default;
     void OnDepth(const uint8_t* payload, size_t size);
@@ -44,7 +50,8 @@ private:
     oxr::protocol::camera::FrameInfo info_ = {};
     uint32_t nextFrameId_ = 1;
     oxr::protocol::camera::Pose headFromCamera_ = {{0, 0, 0, 1}, {0, 0, 0}};
-    std::vector<uint16_t> depth_;
+    std::shared_ptr<const std::vector<uint16_t>> depth_;
+    int64_t depthReceivedNs_ = 0;
     oxr::protocol::camera::DepthInfo depthInfo_ = {};
     uint32_t nextDepthId_ = 1;
 };

@@ -2,6 +2,7 @@
 
 #include "Session.h"
 #include "SpatialEntity.h"
+#include "EnvironmentRaycast.h"
 #include "CompositionLayerAlpha.h"
 #include "CompositionOverlay.h"
 #include "Config.h"
@@ -192,6 +193,7 @@ Session::~Session()
         std::terminate();
     }
     oxrsys::spatial_entity::OnSessionDestroyed();
+    oxrsys::environment_raycast::OnSessionDestroyed();
     instance_->RemoveEventsForSession(reinterpret_cast<XrSession>(handle_));
     instance_->SetSession(nullptr);
     Runtime::Get().RemoveHandle(handle_);

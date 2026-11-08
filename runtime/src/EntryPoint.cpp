@@ -19,6 +19,7 @@
 #include "HandTracker.h"
 #include "PassthroughFB.h"
 #include "SpatialEntity.h"
+#include "EnvironmentRaycast.h"
 #include "Config.h"
 #include "RuntimeStatus.h"
 #include "TimespecConversion.h"
@@ -295,6 +296,11 @@ static std::vector<ExtensionInfo> GetSupportedExtensionInfos()
     {
         extensions.push_back({name, version});
     }
+    // Link para Mac: environment ray casts answered from the depth the headset relays (EnvironmentRaycast.cpp).
+    for (const auto& [name, version] : oxrsys::environment_raycast::Extensions())
+    {
+        extensions.push_back({name, version});
+    }
 #ifdef XR_USE_GRAPHICS_API_VULKAN
     extensions.push_back({XR_KHR_VULKAN_ENABLE_EXTENSION_NAME, XR_KHR_vulkan_enable_SPEC_VERSION});
     extensions.push_back({XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME, XR_KHR_vulkan_enable2_SPEC_VERSION});
@@ -337,6 +343,10 @@ static const char* ExtensionForFunctionName(const char* functionName)
     if (const char* spatialExtension = oxrsys::spatial_entity::ExtensionForFunction(functionName))
     {
         return spatialExtension;
+    }
+    if (const char* raycastExtension = oxrsys::environment_raycast::ExtensionForFunction(functionName))
+    {
+        return raycastExtension;
     }
 
     if (std::strcmp(functionName, "xrCreateHandTrackerEXT") == 0 ||
@@ -4146,6 +4156,10 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetInstanceProcAddr(
     if (oxrsys::spatial_entity::GetProcAddr(name, function))
     {
         return *function != nullptr ? XR_SUCCESS : XR_ERROR_FUNCTION_UNSUPPORTED;
+    }
+    if (oxrsys::environment_raycast::GetProcAddr(name, function))
+    {
+        return XR_SUCCESS;
     }
 
     // Global functions

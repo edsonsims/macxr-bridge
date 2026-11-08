@@ -22,6 +22,7 @@ add_library(oxrsys_runtime SHARED
     src/PassthroughFB.cpp
     src/SpatialProxy.cpp
     src/SpatialEntity.cpp
+    src/EnvironmentRaycast.cpp
     src/CameraRelay.mm
     src/StreamingServer.cpp
     src/PacketPacer.cpp

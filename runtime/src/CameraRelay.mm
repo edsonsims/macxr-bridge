@@ -7,6 +7,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <cstring>
 
 using namespace oxr::protocol::camera;
@@ -171,11 +172,14 @@ void CameraRelay::OnDepth(const uint8_t* payload, size_t size)
     std::memcpy(&dh, payload, sizeof(dh));
     const size_t pixels = static_cast<size_t>(dh.width) * dh.height;
     if (pixels == 0 || dh.payloadSize != pixels * sizeof(uint16_t) || size != sizeof(DepthHeader) + dh.payloadSize) return;
-    std::vector<uint16_t> depth(pixels);
-    std::memcpy(depth.data(), payload + sizeof(DepthHeader), dh.payloadSize);
+    auto depth = std::make_shared<std::vector<uint16_t>>(pixels);
+    std::memcpy(depth->data(), payload + sizeof(DepthHeader), dh.payloadSize);
+    const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
 
     std::lock_guard<std::mutex> lock(mutex_);
-    depth_.swap(depth);
+    depth_ = std::move(depth);
+    depthReceivedNs_ = now;
     depthInfo_.width = dh.width;
     depthInfo_.height = dh.height;
     depthInfo_.valid = 1;
@@ -205,14 +209,27 @@ DepthInfo CameraRelay::GetLatestDepth(uint16_t* dst, uint32_t dstCount, uint32_t
     if (dst != nullptr)
     {
         const uint32_t need = depthInfo_.width * depthInfo_.height;
-        if (dstCount < need || depth_.size() < need)
+        if (dstCount < need || !depth_ || depth_->size() < need)
         {
             out.valid = 0;
             return out;
         }
-        std::memcpy(dst, depth_.data(), need * sizeof(uint16_t));
+        std::memcpy(dst, depth_->data(), need * sizeof(uint16_t));
     }
     return out;
+}
+
+bool CameraRelay::GetDepthSnapshot(DepthInfo& info, std::shared_ptr<const std::vector<uint16_t>>& pixels,
+                                   int64_t& ageNs) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!depthInfo_.valid || !depth_ || !connected_) return false;
+    info = depthInfo_;
+    pixels = depth_;
+    const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    ageNs = now - depthReceivedNs_;
+    return true;
 }
 
 FrameInfo CameraRelay::GetLatest(uint8_t* dst, uint32_t dstCapacity, uint32_t lastFrameId)
