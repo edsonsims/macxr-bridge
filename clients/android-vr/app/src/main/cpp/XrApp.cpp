@@ -2245,6 +2245,8 @@ void XrApp::StartNetworking()
     transportMode_ = TransportMode::WifiUdp;
     lastUsbAdbRetryTime_ = {};
     usbAdbRetryAttempts_ = 0;
+    firstWifiAnnounceNs_.store(0);
+    usbRetryNow_.store(false);
     connectionState_.store(ConnectionState::Disconnected);
     shellStatusText_ = "Preparing network";
     needsReconnect_.store(false);
@@ -2315,6 +2317,8 @@ void XrApp::ResetConnection(const char* reason)
     connectionTime_ = {};
     lastUsbAdbRetryTime_ = {};
     usbAdbRetryAttempts_ = 0;
+    firstWifiAnnounceNs_.store(0);
+    usbRetryNow_.store(false);
 
     videoWidth_ = 0;
     videoHeight_ = 0;
@@ -2567,10 +2571,33 @@ void XrApp::CloseCameraSocket()
 
 void XrApp::OnServerFound(const protocol::ServerAnnounce& server, const char* serverIp)
 {
+    const bool usbNetwork = usb_network::IsServerAddress(serverIp);
+    if (!usbNetwork && connectionState_.load() != ConnectionState::Connected)
+    {
+        // Link para Mac: the runtime opens its USB ADB listeners together with the Wi-Fi broadcast, but a
+        // restarted session is often announced over Wi-Fi before the 1 s USB retry fires. Once connected via
+        // Wi-Fi the server refuses USB (and the spatial/camera channels are USB-only), so hold Wi-Fi announces
+        // for a short grace window and ask the main thread to retry USB right away.
+        const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        constexpr int64_t kWifiGraceNs = 2500000000LL;
+        int64_t first = firstWifiAnnounceNs_.load();
+        if (first == 0 || now - first > 4 * kWifiGraceNs) // nova rodada de anúncios
+        {
+            firstWifiAnnounceNs_.store(now);
+            usbRetryNow_.store(true);
+            LOGI("WiFi announce from %s held for USB ADB preference", serverIp);
+            return;
+        }
+        if (now - first < kWifiGraceNs)
+        {
+            usbRetryNow_.store(true);
+            return;
+        }
+        LOGI("USB ADB still unavailable after grace window; using WiFi (%s)", serverIp);
+    }
     ConfigureServerConnection(server, serverIp,
-                              usb_network::IsServerAddress(serverIp)
-                                  ? TransportMode::UsbNetworkUdp
-                                  : TransportMode::WifiUdp);
+                              usbNetwork ? TransportMode::UsbNetworkUdp : TransportMode::WifiUdp);
 }
 
 bool XrApp::TryStartUsbAdbTransport(bool logUnavailable)
@@ -2625,7 +2652,8 @@ void XrApp::RetryUsbAdbTransportIfNeeded()
     }
 
     auto now = std::chrono::steady_clock::now();
-    if (lastUsbAdbRetryTime_.time_since_epoch().count() != 0 &&
+    const bool retryNow = usbRetryNow_.exchange(false);
+    if (!retryNow && lastUsbAdbRetryTime_.time_since_epoch().count() != 0 &&
         now - lastUsbAdbRetryTime_ < kUsbAdbRetryInterval)
     {
         return;

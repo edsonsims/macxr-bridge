@@ -150,29 +150,36 @@ public final class HeadsetCamera
     private void readIntrinsicsAndPose(CameraCharacteristics c, Size size)
     {
         float[] intr = c.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION);
-        android.util.SizeF physical = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
-        android.graphics.Rect active = c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
-        // intrinsicCalibration is [fx, fy, cx, cy, skew] in pixels of the active array.
-        float sx = 1f, sy = 1f;
-        if (active != null && active.width() > 0 && active.height() > 0)
+        // LENS_INTRINSIC_CALIBRATION is [fx, fy, cx, cy, s] in pixels of the pre-correction active array.
+        android.graphics.Rect array = null;
+        if (android.os.Build.VERSION.SDK_INT >= 23)
         {
-            sx = (float) size.getWidth() / active.width();
-            sy = (float) size.getHeight() / active.height();
+            array = c.get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE);
         }
-        if (intr != null && intr.length >= 4)
+        if (array == null) array = c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+        final float streamW = size.getWidth(), streamH = size.getHeight();
+        if (intr != null && intr.length >= 4 && array != null && array.width() > 0 && array.height() > 0)
         {
-            fx = intr[0] * sx; fy = intr[1] * sy; cx = intr[2] * sx; cy = intr[3] * sy;
+            // The stream is a centered aspect-fit crop of the sensor, then a uniform scale (not a stretch):
+            // a 640x480 stream of a 1280x1280 sensor uses the 1280x960 band in the middle.
+            float arrayW = array.width(), arrayH = array.height();
+            float cropW = Math.min(arrayW, arrayH * streamW / streamH);
+            float cropH = cropW * streamH / streamW;
+            float cropX = (arrayW - cropW) * 0.5f, cropY = (arrayH - cropH) * 0.5f;
+            float scale = streamW / cropW;
+            fx = intr[0] * scale; fy = intr[1] * scale;
+            cx = (intr[2] - cropX) * scale; cy = (intr[3] - cropY) * scale;
         }
         else
         {
-            // Fallback: assume ~90° horizontal FOV.
-            fx = fy = size.getWidth() * 0.5f; cx = size.getWidth() * 0.5f; cy = size.getHeight() * 0.5f;
+            // Fallback: assume ~90 degree horizontal FOV.
+            fx = fy = streamW * 0.5f; cx = streamW * 0.5f; cy = streamH * 0.5f;
         }
         float[] t = c.get(CameraCharacteristics.LENS_POSE_TRANSLATION);
         float[] r = c.get(CameraCharacteristics.LENS_POSE_ROTATION);
         if (t != null && t.length >= 3) { px = t[0]; py = t[1]; pz = t[2]; }
         if (r != null && r.length >= 4) { qx = r[0]; qy = r[1]; qz = r[2]; qw = r[3]; }
-        Log.i(TAG, "Intrinsics fx=" + fx + " fy=" + fy + " cx=" + cx + " cy=" + cy +
+        Log.i(TAG, "Intrinsics (stream " + (int) streamW + "x" + (int) streamH + ") fx=" + fx + " fy=" + fy + " cx=" + cx + " cy=" + cy +
                    " pose t=(" + px + "," + py + "," + pz + ") q=(" + qx + "," + qy + "," + qz + "," + qw + ")");
     }
 

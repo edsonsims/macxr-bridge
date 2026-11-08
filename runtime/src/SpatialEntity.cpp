@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -36,8 +37,11 @@ struct CachedBlob
 
 std::mutex gMutex;
 std::unordered_map<uint64_t, Space*> gRemoteSpaces;                       // client space id -> runtime space
-std::unordered_map<uint64_t, std::vector<SpaceEntry>> gQueryResults;      // async request id -> results (FB)
-std::unordered_map<uint64_t, std::vector<SpaceEntry>> gDiscoveryResults;  // async request id -> results (META)
+// async request id -> one batch per "results available" event, in arrival order. The headset can deliver a
+// request's results in several events (e.g. 20 + 0 + 2 spaces) before the app drains the first one, so batches
+// must queue instead of overwriting each other (MRUK saw only the last batch and reported NoRoomsFound).
+std::unordered_map<uint64_t, std::deque<std::vector<SpaceEntry>>> gQueryResults;      // FB
+std::unordered_map<uint64_t, std::deque<std::vector<SpaceEntry>>> gDiscoveryResults;  // META
 std::unordered_map<uint64_t, CachedBlob> gMeshCache;                      // client space id -> last mesh response
 constexpr auto kMeshCacheTtl = std::chrono::seconds(3);
 
@@ -602,17 +606,18 @@ XRAPI_ATTR XrResult XRAPI_CALL OxrRetrieveSpaceQueryResultsFB(XrSession session,
     {
         std::lock_guard<std::mutex> lock(gMutex);
         auto it = gQueryResults.find(requestId);
-        if (it == gQueryResults.end())
+        if (it == gQueryResults.end() || it->second.empty())
         {
             return XR_ERROR_VALIDATION_FAILURE;
         }
-        for (const auto& entry : it->second)
+        for (const auto& entry : it->second.front())
         {
             list.push_back({entry.space, entry.uuid});
         }
-        if (results->resultCapacityInput > 0)
+        if (list.empty() || (results->resultCapacityInput > 0 && results->resultCapacityInput >= list.size()))
         {
-            gQueryResults.erase(it); // results are retrieved once
+            it->second.pop_front(); // each batch is retrieved once, in order
+            if (it->second.empty()) gQueryResults.erase(it);
         }
     }
     return FillArray(results->resultCapacityInput, &results->resultCountOutput, results->results, list);
@@ -690,17 +695,18 @@ XRAPI_ATTR XrResult XRAPI_CALL OxrRetrieveSpaceDiscoveryResultsMETA(XrSession se
     {
         std::lock_guard<std::mutex> lock(gMutex);
         auto it = gDiscoveryResults.find(requestId);
-        if (it == gDiscoveryResults.end())
+        if (it == gDiscoveryResults.end() || it->second.empty())
         {
             return XR_ERROR_VALIDATION_FAILURE;
         }
-        for (const auto& entry : it->second)
+        for (const auto& entry : it->second.front())
         {
             list.push_back({entry.space, entry.uuid});
         }
-        if (results->resultCapacityInput > 0)
+        if (list.empty() || (results->resultCapacityInput > 0 && results->resultCapacityInput >= list.size()))
         {
-            gDiscoveryResults.erase(it);
+            it->second.pop_front();
+            if (it->second.empty()) gDiscoveryResults.erase(it);
         }
     }
     return FillArray(results->resultCapacityInput, &results->resultCountOutput, results->results, list);
@@ -1236,14 +1242,14 @@ void DrainEvents(Instance* instance, Session* session)
                     std::lock_guard<std::mutex> lock(gMutex);
                     if (event.op == sp::Op::EvtQueryResultsFB)
                     {
-                        gQueryResults[head.asyncRequestId] = std::move(entries);
+                        gQueryResults[head.asyncRequestId].push_back(std::move(entries));
                         auto* out = reinterpret_cast<XrEventDataSpaceQueryResultsAvailableFB*>(&buffer);
                         out->type = XR_TYPE_EVENT_DATA_SPACE_QUERY_RESULTS_AVAILABLE_FB;
                         out->requestId = head.asyncRequestId;
                     }
                     else
                     {
-                        gDiscoveryResults[head.asyncRequestId] = std::move(entries);
+                        gDiscoveryResults[head.asyncRequestId].push_back(std::move(entries));
                         auto* out = reinterpret_cast<XrEventDataSpaceDiscoveryResultsAvailableMETA*>(&buffer);
                         out->type = XR_TYPE_EVENT_DATA_SPACE_DISCOVERY_RESULTS_AVAILABLE_META;
                         out->requestId = head.asyncRequestId;

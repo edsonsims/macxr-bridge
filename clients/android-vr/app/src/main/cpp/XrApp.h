@@ -283,6 +283,9 @@ private:
     std::atomic<bool> shellPendingNetworkReset_{false};
     std::chrono::steady_clock::time_point lastUsbAdbRetryTime_;
     uint32_t usbAdbRetryAttempts_ = 0;
+    // Link para Mac: prefer USB ADB over a Wi-Fi announce that arrives first (spatial/camera are USB-only).
+    std::atomic<int64_t> firstWifiAnnounceNs_{0};
+    std::atomic<bool> usbRetryNow_{false};
     char serverIp_[64] = {};
     uint16_t serverVideoPort_ = 0;
     uint16_t serverTrackingPort_ = 0;
