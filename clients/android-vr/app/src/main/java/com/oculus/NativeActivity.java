@@ -53,6 +53,9 @@ public class NativeActivity extends android.app.NativeActivity
     // Link para Mac: Scene (room) data for the macOS runtime needs this runtime permission.
     private static final String SCENE_PERMISSION = "com.oculus.permission.USE_SCENE";
     private static final int SCENE_PERMISSION_REQUEST = 0x5C3E;
+    private static final String CAMERA_PERMISSION = "horizonos.permission.HEADSET_CAMERA";
+    private static final int CAMERA_PERMISSION_REQUEST = 0x5CA3;
+    private HeadsetCamera headsetCamera;
 
     /**
      * Reports the USB network (CDC-NCM) link's Ethernet network to the native client, which binds
@@ -126,6 +129,25 @@ public class NativeActivity extends android.app.NativeActivity
         super.onCreate(savedInstanceState);
         probeUsbPermissionTargets(getIntent());
         requestScenePermission();
+        headsetCamera = new HeadsetCamera(this);
+        requestCameraPermission();
+    }
+
+    private void requestCameraPermission()
+    {
+        if (checkSelfPermission(CAMERA_PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED)
+        {
+            Log.i(TAG, "Headset camera permission already granted");
+            startHeadsetCamera();
+            return;
+        }
+        Log.i(TAG, "Requesting headset camera permission");
+        requestPermissions(new String[] {CAMERA_PERMISSION}, CAMERA_PERMISSION_REQUEST);
+    }
+
+    private void startHeadsetCamera()
+    {
+        if (headsetCamera != null) headsetCamera.start(0, 10);
     }
 
     private void requestScenePermission()
@@ -149,6 +171,13 @@ public class NativeActivity extends android.app.NativeActivity
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults)
     {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == CAMERA_PERMISSION_REQUEST)
+        {
+            boolean ok = permissions.length > 0 && grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            Log.i(TAG, "Headset camera permission " + (ok ? "granted" : "denied"));
+            if (ok) startHeadsetCamera();
+            return;
+        }
         if (requestCode != SCENE_PERMISSION_REQUEST)
         {
             return;
@@ -204,6 +233,7 @@ public class NativeActivity extends android.app.NativeActivity
             connectivityManager = null;
             nativeSetUsbNetwork(0);
         }
+        if (headsetCamera != null) { headsetCamera.stop(); headsetCamera = null; }
         super.onDestroy();
     }
 

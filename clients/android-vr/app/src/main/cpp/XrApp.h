@@ -22,6 +22,7 @@
 #include "QuestPassthroughAlphaPolicy.h"
 #include "QuestShellInteraction.h"
 #include "SpatialBridge.h"
+#include "CameraSender.h"
 #include "TrackingSender.h"
 #include "VideoDecoder.h"
 
@@ -108,6 +109,8 @@ private:
     void CloseControlSocket();
     bool OpenUsbSpatialSocket(uint16_t spatialPort);
     void CloseSpatialSocket();
+    bool OpenUsbCameraSocket(uint16_t cameraPort);
+    void CloseCameraSocket();
     void SendClientConnect(const char* serverIp);
     void StartControlReceiver();
     void StopControlReceiver();
@@ -270,6 +273,7 @@ private:
     int controlSocket_ = -1;
     int controlTcpSocket_ = -1;
     int spatialTcpSocket_ = -1;
+    int cameraTcpSocket_ = -1;
     std::thread controlReceiveThread_;
     std::atomic<bool> controlReceiveRunning_{false};
     TransportMode transportMode_ = TransportMode::WifiUdp;

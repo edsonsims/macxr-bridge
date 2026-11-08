@@ -18,6 +18,7 @@ constexpr uint16_t TRACKING_PORT = 9945;
 constexpr uint16_t CONTROL_PORT = 9946;
 constexpr uint16_t AUDIO_PORT = 9947;
 constexpr uint16_t SPATIAL_PORT = 9948;
+constexpr uint16_t CAMERA_PORT = 9949; // Link para Mac: passthrough camera relay (PCA)
 constexpr uint32_t HAND_JOINT_COUNT = 26;
 constexpr uint32_t STREAMING_MIN_BITRATE_MBPS = 1;
 constexpr uint32_t STREAMING_MAX_BITRATE_MBPS = 200;
@@ -50,6 +51,7 @@ enum class TcpRecordType : uint16_t
     Disconnect = 0x0007,
     Audio = 0x0008,
     Spatial = 0x0009,
+    Camera = 0x000A,
 };
 
 struct TcpRecordHeader

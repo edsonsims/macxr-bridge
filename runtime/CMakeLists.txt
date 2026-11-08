@@ -22,6 +22,7 @@ add_library(oxrsys_runtime SHARED
     src/PassthroughFB.cpp
     src/SpatialProxy.cpp
     src/SpatialEntity.cpp
+    src/CameraRelay.mm
     src/StreamingServer.cpp
     src/PacketPacer.cpp
     src/TrackingReceiver.cpp
@@ -69,6 +70,8 @@ target_link_libraries(oxrsys_runtime PRIVATE
     "-framework CoreMedia"
     "-framework CoreVideo"
     "-framework IOSurface"
+    "-framework CoreGraphics"
+    "-framework ImageIO"
 )
 
 # Only export the negotiation entry point.

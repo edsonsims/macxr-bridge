@@ -2286,6 +2286,7 @@ void XrApp::ResetConnection(const char* reason)
     StopStreamConfigWorker();
     CloseControlSocket();
     CloseSpatialSocket();
+    CloseCameraSocket();
     if (networkReceiver_)
     {
         networkReceiver_->Stop();
@@ -2527,6 +2528,40 @@ void XrApp::CloseSpatialSocket()
         SendTcpRecord(spatialTcpSocket_, protocol::TcpRecordType::Disconnect, nullptr, 0);
         close(spatialTcpSocket_);
         spatialTcpSocket_ = -1;
+    }
+}
+
+bool XrApp::OpenUsbCameraSocket(uint16_t cameraPort)
+{
+    CloseCameraSocket();
+    if (cameraPort == 0) return false;
+    cameraTcpSocket_ = socket(AF_INET, SOCK_STREAM, 0);
+    if (cameraTcpSocket_ < 0) { LOGE("Failed to create USB TCP camera socket"); return false; }
+    ConfigureTcpSocket(cameraTcpSocket_);
+    sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(cameraPort);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (connect(cameraTcpSocket_, (sockaddr*)&addr, sizeof(addr)) < 0)
+    {
+        LOGW("USB TCP camera socket unavailable on port %u", cameraPort);
+        close(cameraTcpSocket_);
+        cameraTcpSocket_ = -1;
+        return false;
+    }
+    LOGI("USB TCP camera channel connected on port %u", cameraPort);
+    CameraSender::Get().Attach(cameraTcpSocket_);
+    return true;
+}
+
+void XrApp::CloseCameraSocket()
+{
+    CameraSender::Get().Detach();
+    if (cameraTcpSocket_ >= 0)
+    {
+        SendTcpRecord(cameraTcpSocket_, protocol::TcpRecordType::Disconnect, nullptr, 0);
+        close(cameraTcpSocket_);
+        cameraTcpSocket_ = -1;
     }
 }
 
@@ -2871,6 +2906,7 @@ void XrApp::ConfigureServerConnection(const protocol::ServerAnnounce& server,
         timeval timeout = {0, 0};
         setsockopt(controlTcpSocket_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
         OpenUsbSpatialSocket(serverSpatialPort_);
+        OpenUsbCameraSocket(oxr::protocol::CAMERA_PORT);
     }
 
     RefreshCurrentDisplayRate("ClientConnect", true);
@@ -5107,6 +5143,14 @@ protocol::TrackingPacket XrApp::BuildTrackingPacket(XrTime predictedDisplayTime)
     packet.headOrientation[2] = views_[0].pose.orientation.z;
     packet.headOrientation[3] = views_[0].pose.orientation.w;
 
+    // Link para Mac: feed the camera relay the head pose (STAGE space) for this frame.
+    {
+        XrPosef headPose = {};
+        headPose.position = {centerX, centerY, centerZ};
+        headPose.orientation = views_[0].pose.orientation;
+        CameraSender::Get().SetHeadPose(headPose);
+    }
+
     // Read head velocity via xrLocateSpace (VIEW space relative to app space)
     if (viewSpace_ != XR_NULL_HANDLE)
     {
@@ -5684,6 +5728,7 @@ void XrApp::HandleSessionStateChange(XrSessionState newState)
 void XrApp::Shutdown()
 {
     StopNetworking();
+    CloseCameraSocket();
     spatialBridge_.Stop();
     ShutdownPassthrough();
     ShutdownHandTracking();

@@ -68,6 +68,7 @@ add_library(oxrsys_android SHARED
     UsbNetworkLink.cpp
     SpatialBridge.cpp
     SpatialPermission.cpp
+    CameraSender.cpp
 )
 
 target_include_directories(oxrsys_android PRIVATE

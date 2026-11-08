@@ -181,6 +181,7 @@ private:
     void TcpVideoThread();
     void TcpTrackingThread();
     void TcpSpatialThread();
+    void TcpCameraThread();
     std::string GetLocalIpAddress() const;
     oxr::protocol::ServerAnnounce BuildServerAnnounce(bool reliableControlTransport) const;
     void ReleaseStreamingFrame(StreamingFrame& frame);
@@ -275,10 +276,12 @@ private:
     SocketHandle tcpVideoListenSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpTrackingListenSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpSpatialListenSocket_ = oxrsys::runtime_socket::InvalidSocket;
+    SocketHandle tcpCameraListenSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpControlClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpVideoClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpTrackingClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpSpatialClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
+    SocketHandle tcpCameraClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
     std::mutex tcpSocketMutex_;
     std::mutex disconnectMutex_;
     std::mutex stopMutex_;
@@ -304,6 +307,7 @@ private:
     std::thread tcpVideoThread_;
     std::thread tcpTrackingThread_;
     std::thread tcpSpatialThread_;
+    std::thread tcpCameraThread_;
     std::atomic<bool> running_{false};
     StreamingFrameQueue frameQueue_;
     std::shared_ptr<PacketDispatchState> packetDispatchState_;

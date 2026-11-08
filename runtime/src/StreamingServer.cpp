@@ -2,6 +2,7 @@
 
 #include "StreamingServer.h"
 #include "SpatialProxy.h"
+#include "CameraRelay.h"
 #include "ClientLiveness.h"
 #include "Config.h"
 #include "RuntimePlatform.h"
@@ -851,6 +852,7 @@ bool StreamingServer::Stop(std::chrono::nanoseconds timeout)
     JoinWorkerThread(tcpVideoThread_, "USB video");
     JoinWorkerThread(tcpTrackingThread_, "USB tracking");
     JoinWorkerThread(tcpSpatialThread_, "USB spatial");
+    JoinWorkerThread(tcpCameraThread_, "USB camera");
     oxrsys::runtime_socket::Close(videoSocket_);
     frameQueue_.Clear();
     ClearVideoSendQueue();
@@ -1074,6 +1076,7 @@ bool StreamingServer::StartUsbTcpListeners()
     tcpVideoListenSocket_ = CreateLoopbackListener(oxr::protocol::VIDEO_PORT);
     tcpTrackingListenSocket_ = CreateLoopbackListener(oxr::protocol::TRACKING_PORT);
     tcpSpatialListenSocket_ = CreateLoopbackListener(oxr::protocol::SPATIAL_PORT);
+    tcpCameraListenSocket_ = CreateLoopbackListener(oxr::protocol::CAMERA_PORT);
     const bool spatialBackendAttached = false;
     if (!oxrsys::streaming_transport::UsbAdbTcpListenersReady(
             oxrsys::runtime_socket::IsValid(tcpControlListenSocket_),
@@ -1097,6 +1100,15 @@ bool StreamingServer::StartUsbTcpListeners()
     {
         spdlog::warn("StreamingServer: optional USB ADB spatial listener on localhost port {} unavailable; continuing without spatial channel",
                      oxr::protocol::SPATIAL_PORT);
+    }
+    if (oxrsys::runtime_socket::IsValid(tcpCameraListenSocket_))
+    {
+        tcpCameraThread_ = std::thread(&StreamingServer::TcpCameraThread, this);
+    }
+    else
+    {
+        spdlog::warn("StreamingServer: optional USB ADB camera listener on localhost port {} unavailable; continuing without camera channel",
+                     oxr::protocol::CAMERA_PORT);
     }
     spdlog::info("StreamingServer: USB ADB TCP listeners active on localhost ports {}/{}/{}{}",
                   oxr::protocol::CONTROL_PORT,
@@ -1123,10 +1135,12 @@ void StreamingServer::StopUsbTcpSockets()
         &tcpVideoListenSocket_,
         &tcpTrackingListenSocket_,
         &tcpSpatialListenSocket_,
+        &tcpCameraListenSocket_,
         &tcpControlClientSocket_,
         &tcpVideoClientSocket_,
         &tcpTrackingClientSocket_,
         &tcpSpatialClientSocket_,
+        &tcpCameraClientSocket_,
     };
     for (SocketHandle* socketPtr : sockets)
     {
@@ -1386,6 +1400,65 @@ void StreamingServer::TcpSpatialThread()
         spdlog::info("StreamingServer: USB ADB spatial client disconnected");
     }
     spdlog::info("StreamingServer: USB ADB spatial thread ended");
+}
+
+void StreamingServer::TcpCameraThread()
+{
+    while (running_.load() && usbAdbEnabled_)
+    {
+        SocketHandle clientSocket = AcceptWithTimeout(tcpCameraListenSocket_);
+        if (!oxrsys::runtime_socket::IsValid(clientSocket))
+        {
+            continue;
+        }
+        {
+            std::lock_guard<std::mutex> lock(tcpSocketMutex_);
+            if (oxrsys::runtime_socket::IsValid(tcpCameraClientSocket_))
+            {
+                CloseTcpSocket(tcpCameraClientSocket_);
+            }
+            tcpCameraClientSocket_ = clientSocket;
+        }
+        spdlog::info("StreamingServer: USB ADB camera client connected");
+        CameraRelay::Get().SetConnected(true);
+        while (running_.load())
+        {
+            oxr::protocol::TcpRecordHeader header = {};
+            std::vector<uint8_t> payload;
+            if (!ReadTcpRecord(clientSocket, header, payload))
+            {
+                break;
+            }
+            if (header.type == oxr::protocol::TcpRecordType::Disconnect)
+            {
+                break;
+            }
+            if (header.type != oxr::protocol::TcpRecordType::Camera)
+            {
+                continue;
+            }
+            CameraRelay::Get().OnMessage(payload.data(), payload.size());
+        }
+        CameraRelay::Get().SetConnected(false);
+        bool shouldClose = true;
+        {
+            std::lock_guard<std::mutex> lock(tcpSocketMutex_);
+            if (tcpCameraClientSocket_ == clientSocket)
+            {
+                tcpCameraClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
+            }
+            else
+            {
+                shouldClose = false;
+            }
+        }
+        if (shouldClose)
+        {
+            CloseTcpSocket(clientSocket);
+        }
+        spdlog::info("StreamingServer: USB ADB camera client disconnected");
+    }
+    spdlog::info("StreamingServer: USB ADB camera thread ended");
 }
 
 void StreamingServer::EncodeThread()
@@ -2307,6 +2380,7 @@ void StreamingServer::HandleClientDisconnect()
         CloseTcpSocket(tcpVideoClientSocket_);
         CloseTcpSocket(tcpTrackingClientSocket_);
         CloseTcpSocket(tcpSpatialClientSocket_);
+        CloseTcpSocket(tcpCameraClientSocket_);
     }
 
     {
