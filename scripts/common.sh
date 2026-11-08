@@ -17,7 +17,7 @@ OXR_CONFIG_DIR="${HOME}/Library/Application Support/OXRSys"
 OXR_TOML="${OXR_CONFIG_DIR}/oxrsys-runtime.toml"
 
 # Portas do transporte USB (adb reverse). 9948 é o canal "spatial", ainda reservado.
-LPM_PORTS=(9944 9945 9946 9948)
+LPM_PORTS=(9944 9945 9946 9948 9949)
 
 autoload -U colors && colors
 ok()   { print -P "%F{green}✔%f $*"; }
