@@ -183,6 +183,15 @@ public final class HeadsetCamera
                    " pose t=(" + px + "," + py + "," + pz + ") q=(" + qx + "," + qy + "," + qz + "," + qw + ")");
     }
 
+    // Link para Mac: the camera is refused while the headset sleeps (validateClientPermissionsLocked) and is
+    // taken away when another app grabs it; keep retrying while we are supposed to be running.
+    private void retryOpenLater(int preferredEye)
+    {
+        Handler h = handler;
+        if (h == null) return;
+        h.postDelayed(() -> { synchronized (HeadsetCamera.this) { if (!running || device != null) return; } openCamera(preferredEye); }, 2000);
+    }
+
     private void openCamera(int preferredEye)
     {
         CameraManager manager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
@@ -202,13 +211,15 @@ public final class HeadsetCamera
                     device = cam;
                     createSession(size);
                 }
-                @Override public void onDisconnected(CameraDevice cam) { Log.w(TAG, "Camera disconnected"); closeCamera(); }
-                @Override public void onError(CameraDevice cam, int error) { Log.e(TAG, "Camera error " + error); closeCamera(); }
+                @Override public void onDisconnected(CameraDevice cam) { Log.w(TAG, "Camera disconnected"); closeCamera(); retryOpenLater(preferredEye); }
+                @Override public void onError(CameraDevice cam, int error) { Log.e(TAG, "Camera error " + error); closeCamera(); retryOpenLater(preferredEye); }
             }, handler);
         }
         catch (Throwable t)
         {
-            Log.e(TAG, "openCamera failed: " + t.getMessage(), t);
+            Log.w(TAG, "openCamera failed (retrying in 2 s): " + t.getMessage());
+            closeCamera();
+            retryOpenLater(preferredEye);
         }
     }
 

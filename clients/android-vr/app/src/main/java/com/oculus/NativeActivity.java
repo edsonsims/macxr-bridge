@@ -209,12 +209,18 @@ public class NativeActivity extends android.app.NativeActivity
         Log.i(TAG, "onResume");
         super.onResume();
         probeUsbPermissionTargets(getIntent());
+        // Link para Mac: the system closes the camera while the headset sleeps; reopen it on resume.
+        if (headsetCamera != null && checkSelfPermission(CAMERA_PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED)
+        {
+            startHeadsetCamera();
+        }
     }
 
     @Override
     protected void onPause()
     {
         Log.i(TAG, "onPause");
+        if (headsetCamera != null) headsetCamera.stop();
         super.onPause();
     }
 
