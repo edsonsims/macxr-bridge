@@ -10,6 +10,7 @@
 #include "SwapchainCreateValidation.h"
 #include "TimespecConversion.h"
 #include "Space.h"
+#include "PassthroughFB.h"
 #include "InputManager.h"
 #include "RuntimePlatform.h"
 #include "StreamingServer.h"
@@ -700,8 +701,15 @@ XrResult Session::EndFrame(const XrFrameEndInfo* frameEndInfo)
 
     // Extract submitted eye sources for streaming. Missing streaming sources do
     // not invalidate the OpenXR frame; they only skip this frame's video encode.
+    const bool fbPassthroughEnabled =
+        instance_ != nullptr && instance_->IsExtensionEnabled(XR_FB_PASSTHROUGH_EXTENSION_NAME);
     const bool passthroughEnabled = instance_ != nullptr &&
-                                    instance_->SupportsPassthroughBlendMode();
+                                    (instance_->SupportsPassthroughBlendMode() || fbPassthroughEnabled);
+    // XR_FB_passthrough: a running passthrough layer under the projection layer means "show the real
+    // world behind the app" (alpha streaming); none means an opaque frame.
+    bool fbPassthroughVisible = false;
+    float fbPassthroughOpacity = 1.0f;
+    XrColor4f fbPassthroughEdgeColor = {0.0f, 0.0f, 0.0f, 0.0f};
     const bool environmentAlphaBlend =
         frameEndInfo->environmentBlendMode == XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND;
     bool sourceAlphaProjectionLayer = false;
@@ -778,9 +786,35 @@ XrResult Session::EndFrame(const XrFrameEndInfo* frameEndInfo)
                 }
                 break;
             }
+            case XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB:
+            {
+                if (!fbPassthroughEnabled)
+                {
+                    return XR_ERROR_LAYER_INVALID;
+                }
+                const auto& ptLayer = *reinterpret_cast<const XrCompositionLayerPassthroughFB*>(layer);
+                auto* layerObj = Runtime::Get().FromHandle<PassthroughLayerFB>(
+                    reinterpret_cast<uint64_t>(ptLayer.layerHandle));
+                if (layerObj == nullptr || layerObj->GetSession() != this)
+                {
+                    return XR_ERROR_HANDLE_INVALID;
+                }
+                if (layerObj->IsVisible())
+                {
+                    fbPassthroughVisible = true;
+                    fbPassthroughOpacity = layerObj->GetOpacity();
+                    fbPassthroughEdgeColor = layerObj->GetEdgeColor();
+                }
+                break;
+            }
             default:
                 return XR_ERROR_LAYER_INVALID;
         }
+    }
+
+    if (fbPassthroughEnabled)
+    {
+        UpdateAppPassthrough(true, fbPassthroughVisible, fbPassthroughOpacity, fbPassthroughEdgeColor);
     }
 
     if (!hasProjectionLayer && frameEndInfo->layerCount > 0)
@@ -800,6 +834,11 @@ XrResult Session::EndFrame(const XrFrameEndInfo* frameEndInfo)
 
     frameSource.alphaBlend = oxrsys::runtime::IsAlphaFrameForStreaming(
         frameEndInfo->environmentBlendMode, sourceAlphaProjectionLayer);
+    if (fbPassthroughEnabled)
+    {
+        // With XR_FB_passthrough the app decides per frame: passthrough layer present -> alpha frame.
+        frameSource.alphaBlend = fbPassthroughVisible;
+    }
 
     if (!environmentAlphaBlend && sourceAlphaProjectionLayer)
     {
@@ -1393,15 +1432,57 @@ void Session::SendHaptics(uint8_t hand, float amplitude, float durationMs, float
     streamingServer_->SendHaptics(command);
 }
 
+void Session::UpdateAppPassthrough(bool appUsesPassthrough, bool visible, float opacity, const XrColor4f& edgeColor)
+{
+    const auto now = std::chrono::steady_clock::now();
+    const bool changed = !appPassthroughSent_ || visible != appPassthroughVisible_ ||
+                         std::abs(opacity - appPassthroughOpacity_) > 1e-3f ||
+                         std::abs(edgeColor.r - appPassthroughEdgeColor_.r) > 1e-3f ||
+                         std::abs(edgeColor.g - appPassthroughEdgeColor_.g) > 1e-3f ||
+                         std::abs(edgeColor.b - appPassthroughEdgeColor_.b) > 1e-3f ||
+                         std::abs(edgeColor.a - appPassthroughEdgeColor_.a) > 1e-3f;
+    const bool refresh = now - appPassthroughLastSend_ > std::chrono::seconds(1);
+    if (!changed && !refresh)
+    {
+        return;
+    }
+    std::shared_lock streamingLock(streamingServerMutex_);
+    if (streamingServer_ == nullptr || !streamingServer_->IsClientConnected())
+    {
+        return;
+    }
+    oxr::protocol::PassthroughStyleCommand command = {};
+    command.enabled = visible ? 1 : 0;
+    command.appControlled = appUsesPassthrough ? 1 : 0;
+    command.opacity = opacity;
+    command.edgeColor[0] = edgeColor.r;
+    command.edgeColor[1] = edgeColor.g;
+    command.edgeColor[2] = edgeColor.b;
+    command.edgeColor[3] = edgeColor.a;
+    if (streamingServer_->SendPassthroughStyle(command))
+    {
+        if (changed)
+        {
+            spdlog::info("Session: app passthrough {} (opacity {:.2f})", visible ? "visible" : "hidden", opacity);
+        }
+        appPassthroughSent_ = true;
+        appPassthroughVisible_ = visible;
+        appPassthroughOpacity_ = opacity;
+        appPassthroughEdgeColor_ = edgeColor;
+        appPassthroughLastSend_ = now;
+    }
+}
+
 XrResult Session::GetStageBounds(XrExtent2Df* bounds)
 {
     std::lock_guard<std::mutex> lock(stageBoundsMutex_);
     *bounds = {};
     const bool available = HasTrackingConnection() && inputManager_->GetStageBounds(*bounds);
-    spdlog::debug("Session: xrGetReferenceSpaceBoundsRect(STAGE) -> available={} {}x{}", available, bounds->width, bounds->height);
     if (available != stageBoundsAvailable_ || bounds->width != stageBounds_.width ||
         bounds->height != stageBounds_.height)
     {
+        // Logged only on change: OVRPlugin queries the bounds every frame.
+        spdlog::debug("Session: xrGetReferenceSpaceBoundsRect(STAGE) -> available={} {}x{}", available, bounds->width, bounds->height);
         XrEventDataBuffer event = {};
         auto* change = reinterpret_cast<XrEventDataReferenceSpaceChangePending*>(&event);
         change->type = XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING;

@@ -45,6 +45,7 @@ TEST_CASE("C++ protocol layouts match the documented wire format", "[protocol]")
     STATIC_REQUIRE(sizeof(LatencyReport) == 40);
     STATIC_REQUIRE(sizeof(RequestKeyframe) == 12);
     STATIC_REQUIRE(sizeof(HapticsCommand) == 16);
+    STATIC_REQUIRE(sizeof(PassthroughStyleCommand) == 24);
     STATIC_REQUIRE(sizeof(NackRequest) == 24);
     STATIC_REQUIRE(sizeof(StreamConfigUpdate) == 68);
     STATIC_REQUIRE(sizeof(StreamConfigAck) == 16);

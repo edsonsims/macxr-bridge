@@ -447,6 +447,7 @@ enum class ControlType : uint8_t
     NackRequest = 0x85,        // Client → Server: retransmit specific packets
     StreamConfigUpdate = 0x86, // Server → Client: live encoded stream dimensions changed
     StreamConfigAck = 0x87,    // Client → Server: decoder accepted/rejected the update
+    PassthroughStyle = 0x88,   // Server → Client: the app's XR_FB_passthrough state (Link para Mac)
 };
 
 enum StreamConfigUpdateFlags : uint32_t
@@ -491,6 +492,19 @@ struct RequestKeyframe
     uint8_t reserved[3] = {};
     uint32_t reasonFlags = 0;
     uint32_t detail = 0;       // Dropped frame count or stall age in ms
+};
+
+// Link para Mac: the OpenXR app's passthrough intent, relayed from the runtime's XR_FB_passthrough
+// implementation to the headset, which owns the real passthrough layer. `enabled` = the app submitted a
+// running passthrough layer this frame; opacity/edge color come from xrPassthroughLayerSetStyleFB.
+struct PassthroughStyleCommand
+{
+    ControlType type = ControlType::PassthroughStyle;
+    uint8_t enabled;           // 1 = show passthrough under the app's frame, 0 = opaque (black) background
+    uint8_t appControlled;     // 1 = the app uses XR_FB_passthrough, so this message overrides the server config
+    uint8_t reserved = 0;
+    float opacity;             // textureOpacityFactor, 0..1
+    float edgeColor[4];        // RGBA, alpha 0 = no edge rendering
 };
 
 struct HapticsCommand

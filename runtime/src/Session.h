@@ -75,6 +75,11 @@ public:
     // hand: 0 = left, 1 = right. Amplitude 0 stops the hand's vibration.
     void SendHaptics(uint8_t hand, float amplitude, float durationMs, float frequency);
 
+    // Link para Mac (XR_FB_passthrough): what the app wants the headset to show under its frame.
+    // Called from EndFrame (per frame) and from xrPassthroughLayerSetStyleFB; relayed to the client
+    // only when something changed (plus a 1 Hz refresh so a late client catches up).
+    void UpdateAppPassthrough(bool appUsesPassthrough, bool visible, float opacity, const XrColor4f& edgeColor);
+
     // Input manager access
     InputManager& GetInputManager()
     {
@@ -157,6 +162,13 @@ private:
 
     std::unique_ptr<InputManager> inputManager_;
     std::unique_ptr<StreamingServer> streamingServer_;
+
+    // Last XR_FB_passthrough state relayed to the client (see UpdateAppPassthrough).
+    bool appPassthroughSent_ = false;
+    bool appPassthroughVisible_ = false;
+    float appPassthroughOpacity_ = 1.0f;
+    XrColor4f appPassthroughEdgeColor_ = {0.0f, 0.0f, 0.0f, 0.0f};
+    std::chrono::steady_clock::time_point appPassthroughLastSend_{};
     // Frame, space and haptics calls hold this shared for their short, non-blocking use of
     // streamingServer_. EndSession and Shutdown hold it exclusively only to take the server out,
     // then stop and destroy it on their own thread, so no frame call ever waits on Stop().

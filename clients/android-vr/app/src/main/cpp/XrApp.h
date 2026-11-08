@@ -341,6 +341,14 @@ private:
     std::mutex pendingHapticsMutex_;
     std::array<protocol::HapticsCommand, 2> pendingHaptics_ = {};
     std::array<bool, 2> hasPendingHaptics_ = {};
+
+    // Link para Mac: the OpenXR app's XR_FB_passthrough intent relayed by the runtime. While the app
+    // controls passthrough, it overrides the server's passthrough_enabled setting for the streamed frame.
+    std::mutex appPassthroughMutex_;
+    protocol::PassthroughStyleCommand appPassthrough_ = {};
+    bool hasAppPassthrough_ = false;
+    float appliedPassthroughOpacity_ = -1.0f;
+    void ApplyAppPassthroughStyle();
     std::mutex pendingStreamConfigMutex_;
     std::condition_variable pendingStreamConfigCv_;
     protocol::StreamConfigUpdate pendingStreamConfigUpdate_;

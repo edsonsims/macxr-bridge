@@ -17,6 +17,7 @@
 #include "ActionSet.h"
 #include "InputManager.h"
 #include "HandTracker.h"
+#include "PassthroughFB.h"
 #include "Config.h"
 #include "RuntimeStatus.h"
 #include "TimespecConversion.h"
@@ -95,6 +96,8 @@ static std::vector<std::unique_ptr<DebugUtilsMessengerState>> gDebugUtilsMesseng
 
 // Hand trackers
 static std::vector<std::unique_ptr<HandTracker>> gHandTrackers;
+static std::vector<std::unique_ptr<PassthroughFB>> gPassthroughs;          // XR_FB_passthrough
+static std::vector<std::unique_ptr<PassthroughLayerFB>> gPassthroughLayers;
 
 // Graphics API for the current session
 #ifdef XR_USE_GRAPHICS_API_METAL
@@ -156,6 +159,8 @@ static XrResult CleanupRuntimeState()
         }
     }
     gHandTrackers.clear();
+    gPassthroughLayers.clear();
+    gPassthroughs.clear();
     gSession.reset();
     gActions.clear();
     gActionSets.clear();
@@ -256,6 +261,11 @@ static std::vector<ExtensionInfo> GetSupportedExtensionInfos()
         {XR_EXT_HAND_INTERACTION_EXTENSION_NAME, XR_EXT_hand_interaction_SPEC_VERSION},
         {XR_EXT_DEBUG_UTILS_EXTENSION_NAME, XR_EXT_debug_utils_SPEC_VERSION},
         {VALVE_FRAME_CONTROLLER_EXTENSION_NAME, VALVE_FRAME_CONTROLLER_SPEC_VERSION},
+#ifdef XR_FB_passthrough
+        // Link para Mac: the headset client already composites the app over the Quest passthrough; this
+        // exposes it the Meta way (OVRPassthroughLayer, OVRManager.IsInsightPassthroughSupported).
+        {XR_FB_PASSTHROUGH_EXTENSION_NAME, XR_FB_passthrough_SPEC_VERSION},
+#endif
 #ifdef XR_FB_hand_tracking_aim
         // Link para Mac: OVRPlugin/ISDK hands need the FB aim state (pinch strengths, pointer pose)
         // and the hand scale carried by XR_FB_hand_tracking_mesh; without HandScale > 0 the
@@ -325,6 +335,23 @@ static const char* ExtensionForFunctionName(const char* functionName)
     {
         return XR_EXT_HAND_TRACKING_EXTENSION_NAME;
     }
+#ifdef XR_FB_passthrough
+    if (std::strcmp(functionName, "xrCreatePassthroughFB") == 0 ||
+        std::strcmp(functionName, "xrDestroyPassthroughFB") == 0 ||
+        std::strcmp(functionName, "xrPassthroughStartFB") == 0 ||
+        std::strcmp(functionName, "xrPassthroughPauseFB") == 0 ||
+        std::strcmp(functionName, "xrCreatePassthroughLayerFB") == 0 ||
+        std::strcmp(functionName, "xrDestroyPassthroughLayerFB") == 0 ||
+        std::strcmp(functionName, "xrPassthroughLayerPauseFB") == 0 ||
+        std::strcmp(functionName, "xrPassthroughLayerResumeFB") == 0 ||
+        std::strcmp(functionName, "xrPassthroughLayerSetStyleFB") == 0 ||
+        std::strcmp(functionName, "xrCreateGeometryInstanceFB") == 0 ||
+        std::strcmp(functionName, "xrDestroyGeometryInstanceFB") == 0 ||
+        std::strcmp(functionName, "xrGeometryInstanceSetTransformFB") == 0)
+    {
+        return XR_FB_PASSTHROUGH_EXTENSION_NAME;
+    }
+#endif
 #ifdef XR_FB_hand_tracking_mesh
     if (std::strcmp(functionName, "xrGetHandMeshFB") == 0)
     {
@@ -1049,6 +1076,8 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrDestroySession(XrSession session)
         return shutdownResult;
     }
     gHandTrackers.clear();
+    gPassthroughLayers.clear();
+    gPassthroughs.clear();
     gActionSetsAttached = false;
     gAttachedActionSetHandles.clear();
     gReportedInteractionProfiles.clear();
@@ -3299,6 +3328,138 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetHandMeshFB(XrHandTrackerEXT handTrac
 }
 #endif
 
+#ifdef XR_FB_passthrough
+// ============================================================================
+// XR_FB_passthrough (Link para Mac). The Quest client owns the real passthrough layer; here we keep
+// the app's objects and intent, and Session::EndFrame relays visibility/style to the client.
+// ============================================================================
+
+template <typename T>
+static XrResult EraseOwned(std::vector<std::unique_ptr<T>>& owner, uint64_t handle)
+{
+    for (auto it = owner.begin(); it != owner.end(); ++it)
+    {
+        if ((*it)->GetHandle() == handle)
+        {
+            owner.erase(it);
+            return XR_SUCCESS;
+        }
+    }
+    return XR_ERROR_HANDLE_INVALID;
+}
+
+static XRAPI_ATTR XrResult XRAPI_CALL OxrCreatePassthroughFB(
+    XrSession session, const XrPassthroughCreateInfoFB* createInfo, XrPassthroughFB* outPassthrough)
+{
+    auto* sess = GetSession(session);
+    if (!sess) return XR_ERROR_HANDLE_INVALID;
+    if (!sess->GetInstance()->IsExtensionEnabled(XR_FB_PASSTHROUGH_EXTENSION_NAME)) return XR_ERROR_FUNCTION_UNSUPPORTED;
+    if (createInfo == nullptr || outPassthrough == nullptr || createInfo->type != XR_TYPE_PASSTHROUGH_CREATE_INFO_FB)
+        return XR_ERROR_VALIDATION_FAILURE;
+    auto pt = std::make_unique<PassthroughFB>(sess, createInfo->flags);
+    *outPassthrough = reinterpret_cast<XrPassthroughFB>(pt->GetHandle());
+    spdlog::info("OXRSys: xrCreatePassthroughFB (running at creation: {})", pt->IsRunning());
+    gPassthroughs.push_back(std::move(pt));
+    return XR_SUCCESS;
+}
+
+static XRAPI_ATTR XrResult XRAPI_CALL OxrDestroyPassthroughFB(XrPassthroughFB passthrough)
+{
+    const uint64_t handle = reinterpret_cast<uint64_t>(passthrough);
+    auto* pt = Runtime::Get().FromHandle<PassthroughFB>(handle);
+    if (!pt) return XR_ERROR_HANDLE_INVALID;
+    // Layers of this passthrough die with it.
+    for (auto it = gPassthroughLayers.begin(); it != gPassthroughLayers.end();)
+    {
+        if ((*it)->GetPassthrough() == pt) it = gPassthroughLayers.erase(it); else ++it;
+    }
+    return EraseOwned(gPassthroughs, handle);
+}
+
+static XRAPI_ATTR XrResult XRAPI_CALL OxrPassthroughStartFB(XrPassthroughFB passthrough)
+{
+    auto* pt = Runtime::Get().FromHandle<PassthroughFB>(reinterpret_cast<uint64_t>(passthrough));
+    if (!pt) return XR_ERROR_HANDLE_INVALID;
+    pt->SetRunning(true);
+    spdlog::info("OXRSys: xrPassthroughStartFB");
+    return XR_SUCCESS;
+}
+
+static XRAPI_ATTR XrResult XRAPI_CALL OxrPassthroughPauseFB(XrPassthroughFB passthrough)
+{
+    auto* pt = Runtime::Get().FromHandle<PassthroughFB>(reinterpret_cast<uint64_t>(passthrough));
+    if (!pt) return XR_ERROR_HANDLE_INVALID;
+    pt->SetRunning(false);
+    spdlog::info("OXRSys: xrPassthroughPauseFB");
+    return XR_SUCCESS;
+}
+
+static XRAPI_ATTR XrResult XRAPI_CALL OxrCreatePassthroughLayerFB(
+    XrSession session, const XrPassthroughLayerCreateInfoFB* createInfo, XrPassthroughLayerFB* outLayer)
+{
+    auto* sess = GetSession(session);
+    if (!sess) return XR_ERROR_HANDLE_INVALID;
+    if (createInfo == nullptr || outLayer == nullptr || createInfo->type != XR_TYPE_PASSTHROUGH_LAYER_CREATE_INFO_FB)
+        return XR_ERROR_VALIDATION_FAILURE;
+    auto* pt = Runtime::Get().FromHandle<PassthroughFB>(reinterpret_cast<uint64_t>(createInfo->passthrough));
+    if (!pt || pt->GetSession() != sess) return XR_ERROR_HANDLE_INVALID;
+    auto layer = std::make_unique<PassthroughLayerFB>(sess, pt, createInfo->flags, createInfo->purpose);
+    *outLayer = reinterpret_cast<XrPassthroughLayerFB>(layer->GetHandle());
+    spdlog::info("OXRSys: xrCreatePassthroughLayerFB purpose={} running={}", static_cast<int>(createInfo->purpose), layer->IsRunning());
+    gPassthroughLayers.push_back(std::move(layer));
+    return XR_SUCCESS;
+}
+
+static XRAPI_ATTR XrResult XRAPI_CALL OxrDestroyPassthroughLayerFB(XrPassthroughLayerFB layer)
+{
+    return EraseOwned(gPassthroughLayers, reinterpret_cast<uint64_t>(layer));
+}
+
+static XRAPI_ATTR XrResult XRAPI_CALL OxrPassthroughLayerPauseFB(XrPassthroughLayerFB layer)
+{
+    auto* l = Runtime::Get().FromHandle<PassthroughLayerFB>(reinterpret_cast<uint64_t>(layer));
+    if (!l) return XR_ERROR_HANDLE_INVALID;
+    l->SetRunning(false);
+    spdlog::debug("OXRSys: xrPassthroughLayerPauseFB");
+    return XR_SUCCESS;
+}
+
+static XRAPI_ATTR XrResult XRAPI_CALL OxrPassthroughLayerResumeFB(XrPassthroughLayerFB layer)
+{
+    auto* l = Runtime::Get().FromHandle<PassthroughLayerFB>(reinterpret_cast<uint64_t>(layer));
+    if (!l) return XR_ERROR_HANDLE_INVALID;
+    l->SetRunning(true);
+    spdlog::debug("OXRSys: xrPassthroughLayerResumeFB");
+    return XR_SUCCESS;
+}
+
+static XRAPI_ATTR XrResult XRAPI_CALL OxrPassthroughLayerSetStyleFB(
+    XrPassthroughLayerFB layer, const XrPassthroughStyleFB* style)
+{
+    auto* l = Runtime::Get().FromHandle<PassthroughLayerFB>(reinterpret_cast<uint64_t>(layer));
+    if (!l) return XR_ERROR_HANDLE_INVALID;
+    if (style == nullptr || style->type != XR_TYPE_PASSTHROUGH_STYLE_FB) return XR_ERROR_VALIDATION_FAILURE;
+    l->SetStyle(*style);  // color maps / brightness-contrast chained structs are accepted and ignored for now
+    return XR_SUCCESS;
+}
+
+// Projected passthrough (user-defined surfaces) is not relayed yet.
+static XRAPI_ATTR XrResult XRAPI_CALL OxrCreateGeometryInstanceFB(
+    XrSession, const XrGeometryInstanceCreateInfoFB*, XrGeometryInstanceFB*)
+{
+    return XR_ERROR_FEATURE_UNSUPPORTED;
+}
+static XRAPI_ATTR XrResult XRAPI_CALL OxrDestroyGeometryInstanceFB(XrGeometryInstanceFB)
+{
+    return XR_ERROR_HANDLE_INVALID;
+}
+static XRAPI_ATTR XrResult XRAPI_CALL OxrGeometryInstanceSetTransformFB(
+    XrGeometryInstanceFB, const XrGeometryInstanceTransformFB*)
+{
+    return XR_ERROR_HANDLE_INVALID;
+}
+#endif
+
 // ============================================================================
 // Debug utils extension (XR_EXT_debug_utils)
 // ============================================================================
@@ -4053,6 +4214,20 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetInstanceProcAddr(
     DISPATCH(xrLocateHandJointsEXT, OxrLocateHandJointsEXT)
 #ifdef XR_FB_hand_tracking_mesh
     DISPATCH(xrGetHandMeshFB, OxrGetHandMeshFB)
+#endif
+#ifdef XR_FB_passthrough
+    DISPATCH(xrCreatePassthroughFB, OxrCreatePassthroughFB)
+    DISPATCH(xrDestroyPassthroughFB, OxrDestroyPassthroughFB)
+    DISPATCH(xrPassthroughStartFB, OxrPassthroughStartFB)
+    DISPATCH(xrPassthroughPauseFB, OxrPassthroughPauseFB)
+    DISPATCH(xrCreatePassthroughLayerFB, OxrCreatePassthroughLayerFB)
+    DISPATCH(xrDestroyPassthroughLayerFB, OxrDestroyPassthroughLayerFB)
+    DISPATCH(xrPassthroughLayerPauseFB, OxrPassthroughLayerPauseFB)
+    DISPATCH(xrPassthroughLayerResumeFB, OxrPassthroughLayerResumeFB)
+    DISPATCH(xrPassthroughLayerSetStyleFB, OxrPassthroughLayerSetStyleFB)
+    DISPATCH(xrCreateGeometryInstanceFB, OxrCreateGeometryInstanceFB)
+    DISPATCH(xrDestroyGeometryInstanceFB, OxrDestroyGeometryInstanceFB)
+    DISPATCH(xrGeometryInstanceSetTransformFB, OxrGeometryInstanceSetTransformFB)
 #endif
 
     // Debug utils extension

@@ -77,6 +77,20 @@ XrResult Instance::GetSystemProperties(XrSystemId systemId, XrSystemProperties* 
             handTrackingProps->supportsHandTracking =
                 IsExtensionEnabled(XR_EXT_HAND_TRACKING_EXTENSION_NAME) ? XR_TRUE : XR_FALSE;
         }
+#ifdef XR_FB_passthrough
+        else if (next->type == XR_TYPE_SYSTEM_PASSTHROUGH_PROPERTIES_FB)
+        {
+            auto* props = reinterpret_cast<XrSystemPassthroughPropertiesFB*>(next);
+            props->supportsPassthrough = IsExtensionEnabled(XR_FB_PASSTHROUGH_EXTENSION_NAME) ? XR_TRUE : XR_FALSE;
+        }
+        else if (next->type == XR_TYPE_SYSTEM_PASSTHROUGH_PROPERTIES2_FB)
+        {
+            auto* props = reinterpret_cast<XrSystemPassthroughProperties2FB*>(next);
+            props->capabilities = IsExtensionEnabled(XR_FB_PASSTHROUGH_EXTENSION_NAME)
+                ? (XR_PASSTHROUGH_CAPABILITY_BIT_FB | XR_PASSTHROUGH_CAPABILITY_COLOR_BIT_FB)
+                : 0;
+        }
+#endif
 #ifdef XR_META_headset_id
         else if (next->type == XR_TYPE_SYSTEM_HEADSET_ID_PROPERTIES_META &&
                  IsExtensionEnabled(XR_META_HEADSET_ID_EXTENSION_NAME))

@@ -2256,6 +2256,11 @@ void XrApp::StopNetworking()
 
 void XrApp::ResetConnection(const char* reason)
 {
+    {
+        std::lock_guard<std::mutex> lock(appPassthroughMutex_);
+        hasAppPassthrough_ = false;
+        appliedPassthroughOpacity_ = -1.0f;
+    }
     LOGI("Resetting connection: %s", reason != nullptr ? reason : "unspecified");
     StopControlReceiver();
     StopStreamConfigWorker();
@@ -3046,6 +3051,40 @@ void XrApp::HandleControlPayload(const uint8_t* data, size_t size)
             pendingHaptics_[command.hand] = command;
             hasPendingHaptics_[command.hand] = true;
         }
+    }
+    else if (type == protocol::ControlType::PassthroughStyle &&
+             size >= sizeof(protocol::PassthroughStyleCommand))
+    {
+        protocol::PassthroughStyleCommand command = {};
+        memcpy(&command, data, sizeof(command));
+        std::lock_guard<std::mutex> lock(appPassthroughMutex_);
+        if (!hasAppPassthrough_ || command.enabled != appPassthrough_.enabled)
+        {
+            LOGI("App passthrough %s (opacity %.2f, appControlled=%u)",
+                 command.enabled ? "visible" : "hidden", command.opacity, command.appControlled);
+        }
+        appPassthrough_ = command;
+        hasAppPassthrough_ = command.appControlled != 0;
+    }
+}
+
+// Apply the app's passthrough style to the headset layer (XR thread only).
+void XrApp::ApplyAppPassthroughStyle()
+{
+    protocol::PassthroughStyleCommand command = {};
+    {
+        std::lock_guard<std::mutex> lock(appPassthroughMutex_);
+        if (!hasAppPassthrough_) return;
+        command = appPassthrough_;
+    }
+    if (passthroughLayer_ == XR_NULL_HANDLE || xrPassthroughLayerSetStyleFB_ == nullptr) return;
+    if (std::abs(command.opacity - appliedPassthroughOpacity_) < 1e-3f) return;
+    XrPassthroughStyleFB style = {XR_TYPE_PASSTHROUGH_STYLE_FB};
+    style.textureOpacityFactor = command.opacity;
+    style.edgeColor = {command.edgeColor[0], command.edgeColor[1], command.edgeColor[2], command.edgeColor[3]};
+    if (XR_SUCCEEDED(xrPassthroughLayerSetStyleFB_(passthroughLayer_, &style)))
+    {
+        appliedPassthroughOpacity_ = command.opacity;
     }
 }
 
@@ -3903,10 +3942,19 @@ void XrApp::RunFrame()
         bool submitPassthroughLayer = false;
         if (renderedVideo)
         {
+            // Link para Mac: an app that uses XR_FB_passthrough decides per frame whether the real
+            // world shows under its content; otherwise the server's passthrough_enabled setting applies.
+            bool wantPassthrough = serverMixedRealityPassthroughEnabled_;
+            {
+                std::lock_guard<std::mutex> lock(appPassthroughMutex_);
+                if (hasAppPassthrough_) wantPassthrough = appPassthrough_.enabled != 0;
+            }
             submitPassthroughLayer =
-                serverMixedRealityPassthroughEnabled_ &&
+                wantPassthrough &&
                 CanUseShellPassthrough() &&
                 SetShellPassthroughActive(true);
+            if (submitPassthroughLayer) ApplyAppPassthroughStyle();
+            else if (!wantPassthrough) SetShellPassthroughActive(false);
             ReleaseShellForStream(submitPassthroughLayer);
         }
         else

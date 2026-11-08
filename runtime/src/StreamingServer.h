@@ -88,6 +88,10 @@ public:
     {
         return SendControlPayload(&command, sizeof(command));
     }
+    bool SendPassthroughStyle(const oxr::protocol::PassthroughStyleCommand& command)
+    {
+        return SendControlPayload(&command, sizeof(command));
+    }
     State GetState() const { return state_.load(); }
     uint32_t GetTargetRefreshRateHz() const { return targetRefreshRateHz_.load(); }
 

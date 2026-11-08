@@ -19,6 +19,7 @@ add_library(oxrsys_runtime SHARED
     src/ActionSet.cpp
     src/InputManager.cpp
     src/HandTracker.cpp
+    src/PassthroughFB.cpp
     src/StreamingServer.cpp
     src/PacketPacer.cpp
     src/TrackingReceiver.cpp
