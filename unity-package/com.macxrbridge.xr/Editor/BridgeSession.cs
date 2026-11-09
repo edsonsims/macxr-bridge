@@ -124,7 +124,7 @@ namespace MacXRBridge.EditorTools
             if (Replaying) return "stop the replay first (session stop)";
             if (!EditorApplication.isPlaying) return "Play Mode only";
             if (!BridgeCameraSource.IsConnected()) return "the Quest camera is not connected";
-            string name = "sessao";
+            string name = "session";
             _minInterval = 0f;
             foreach (var part in args.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
             {
@@ -309,7 +309,7 @@ namespace MacXRBridge.EditorTools
             if (!Directory.Exists(Root)) return null;
             var dirs = new DirectoryInfo(Root).GetDirectories().Where(d => File.Exists(Path.Combine(d.FullName, "camera.csv")))
                 .OrderByDescending(d => d.Name.Length > 15 ? d.Name.Substring(d.Name.Length - 15) : d.Name).ToList();
-            if (string.IsNullOrEmpty(name) || name == "last" || name == "ultima" || name == "última") return dirs.FirstOrDefault()?.FullName;
+            if (string.IsNullOrEmpty(name) || name == "last") return dirs.FirstOrDefault()?.FullName;
             var exact = dirs.FirstOrDefault(d => d.Name == name);
             if (exact != null) return exact.FullName;
             return dirs.FirstOrDefault(d => d.Name.StartsWith(name + "-") || d.Name.StartsWith(name))?.FullName;
