@@ -1193,7 +1193,7 @@ bool XrApp::CreateInstance(struct android_app* app)
     {
         extensions.push_back(XR_BD_CONTROLLER_INTERACTION_EXTENSION_NAME);
     }
-    // Link para Mac: spatial features proxied to the macOS runtime (anchors, persistence, scene).
+    // MacXR Bridge: spatial features proxied to the macOS runtime (anchors, persistence, scene).
     for (const char* spatialExtension : {XR_FB_SPATIAL_ENTITY_EXTENSION_NAME,
                                          XR_FB_SPATIAL_ENTITY_STORAGE_EXTENSION_NAME,
                                          XR_FB_SPATIAL_ENTITY_QUERY_EXTENSION_NAME,
@@ -1209,13 +1209,13 @@ bool XrApp::CreateInstance(struct android_app* app)
             extensions.push_back(spatialExtension);
         }
     }
-    // Link para Mac: microgestures are relayed to the runtime as button bits.
+    // MacXR Bridge: microgestures are relayed to the runtime as button bits.
     if (microgesturesAvailable_)
     {
         extensions.push_back(XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
         extensions.push_back(XR_META_HAND_TRACKING_MICROGESTURES_EXTENSION_NAME);
     }
-    // Link para Mac: real room depth for ray casts in the Editor (relayed over the camera channel).
+    // MacXR Bridge: real room depth for ray casts in the Editor (relayed over the camera channel).
     if (hasExtension(EnvironmentDepth::ExtensionName()))
     {
         extensions.push_back(EnvironmentDepth::ExtensionName());
@@ -1972,7 +1972,7 @@ bool XrApp::SetupActions()
         return false;
     }
 
-    // Link para Mac: microgestures (XR_META_hand_tracking_microgestures extends hand_interaction_ext).
+    // MacXR Bridge: microgestures (XR_META_hand_tracking_microgestures extends hand_interaction_ext).
     if (microgesturesAvailable_)
     {
         static const char* kNames[5] = {"micro_swipe_left", "micro_swipe_right", "micro_swipe_forward",
@@ -2575,7 +2575,7 @@ bool XrApp::OpenUsbSpatialSocket(uint16_t spatialPort, const char* host)
     addr.sin_family = AF_INET;
     addr.sin_port = htons(spatialPort);
     inet_pton(AF_INET, host, &addr.sin_addr);
-    // Link para Mac: over Wi-Fi / USB network the channel goes straight to the Mac (like Air Link).
+    // MacXR Bridge: over Wi-Fi / USB network the channel goes straight to the Mac (like Air Link).
     if (std::strcmp(host, "127.0.0.1") != 0) usb_network::BindSocketForServer(spatialTcpSocket_, host);
 
     if (connect(spatialTcpSocket_, (sockaddr*)&addr, sizeof(addr)) < 0)
@@ -2646,7 +2646,7 @@ void XrApp::OnServerFound(const protocol::ServerAnnounce& server, const char* se
     const bool usbNetwork = usb_network::IsServerAddress(serverIp);
     if (!usbNetwork && connectionState_.load() != ConnectionState::Connected)
     {
-        // Link para Mac: the runtime opens its USB ADB listeners together with the Wi-Fi broadcast, but a
+        // MacXR Bridge: the runtime opens its USB ADB listeners together with the Wi-Fi broadcast, but a
         // restarted session is often announced over Wi-Fi before the 1 s USB retry fires. Once connected via
         // Wi-Fi the server refuses USB (and the spatial/camera channels are USB-only), so hold Wi-Fi announces
         // for a short grace window and ask the main thread to retry USB right away.
@@ -3010,7 +3010,7 @@ void XrApp::ConfigureServerConnection(const protocol::ServerAnnounce& server,
     }
     else if (!usbAdb)
     {
-        // Link para Mac: room, anchors, camera, depth, audio and microphone over Wi-Fi too (Air Link parity).
+        // MacXR Bridge: room, anchors, camera, depth, audio and microphone over Wi-Fi too (Air Link parity).
         OpenUsbSpatialSocket(serverSpatialPort_, serverIp);
         OpenUsbCameraSocket(oxr::protocol::CAMERA_PORT, serverIp);
     }
@@ -4126,7 +4126,7 @@ void XrApp::RunFrame()
         bool submitPassthroughLayer = false;
         if (renderedVideo)
         {
-            // Link para Mac: an app that uses XR_FB_passthrough decides per frame whether the real
+            // MacXR Bridge: an app that uses XR_FB_passthrough decides per frame whether the real
             // world shows under its content; otherwise the server's passthrough_enabled setting applies.
             bool wantPassthrough = serverMixedRealityPassthroughEnabled_;
             {
@@ -4487,7 +4487,7 @@ bool XrApp::RenderFrame(XrTime predictedDisplayTime)
         }
         else if (hasVideoTexture_)
         {
-            // Check if the stream has been lost (no new frames for 2 seconds). Link para Mac: during a room load the
+            // Check if the stream has been lost (no new frames for 2 seconds). MacXR Bridge: during a room load the
             // Editor waits on spatial round trips (seconds over Wi-Fi) and sends no video; allow 10 s then.
             auto elapsed = std::chrono::steady_clock::now() - lastVideoFrameTime_;
             const int64_t lostAfterSeconds = spatialBridge_.BusyWithinNs(3'000'000'000LL) ? 10 : 2;
@@ -5260,7 +5260,7 @@ protocol::TrackingPacket XrApp::BuildTrackingPacket(XrTime predictedDisplayTime)
     packet.headOrientation[2] = views_[0].pose.orientation.z;
     packet.headOrientation[3] = views_[0].pose.orientation.w;
 
-    // Link para Mac: feed the camera relay the head pose (STAGE space) for this frame.
+    // MacXR Bridge: feed the camera relay the head pose (STAGE space) for this frame.
     {
         XrPosef headPose = {};
         headPose.position = {centerX, centerY, centerZ};
@@ -5372,7 +5372,7 @@ protocol::TrackingPacket XrApp::BuildTrackingPacket(XrTime predictedDisplayTime)
                 jointPayload[i][1] = jointLocations[i].pose.position.y;
                 jointPayload[i][2] = jointLocations[i].pose.position.z;
                 jointPayload[i][3] = jointLocations[i].radius;
-                // Link para Mac: per-joint orientation (quantized), identity when the runtime has none.
+                // MacXR Bridge: per-joint orientation (quantized), identity when the runtime has none.
                 const XrQuaternionf& q = HasValidJointOrientation(jointLocations[i])
                     ? jointLocations[i].pose.orientation : XrQuaternionf{0.0f, 0.0f, 0.0f, 1.0f};
                 auto quantize = [](float v) { return static_cast<int16_t>(std::lround(std::clamp(v, -1.0f, 1.0f) * 32767.0f)); };
@@ -5734,7 +5734,7 @@ protocol::TrackingPacket XrApp::BuildTrackingPacket(XrTime predictedDisplayTime)
     {
         buttons |= protocol::BUTTON_MENU;
     }
-    // Link para Mac: microgestures. Each recognized gesture (a rising edge) is held for ~120 ms in the packet.
+    // MacXR Bridge: microgestures. Each recognized gesture (a rising edge) is held for ~120 ms in the packet.
     if (microgesturesAvailable_)
     {
         static const uint32_t kBits[2][5] = {
@@ -5998,7 +5998,7 @@ void XrApp::Shutdown()
 
 } // namespace oxr
 
-// Link para Mac: headset state for the developer HUD in the Editor (about once a second).
+// MacXR Bridge: headset state for the developer HUD in the Editor (about once a second).
 void oxr::XrApp::SendClientStatsIfDue(bool renderedVideo)
 {
     ++statsDisplayFrames_;

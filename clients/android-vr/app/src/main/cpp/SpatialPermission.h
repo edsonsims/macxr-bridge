@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: com.oculus.permission.USE_SCENE is a runtime permission the Java activity
+// MacXR Bridge: com.oculus.permission.USE_SCENE is a runtime permission the Java activity
 // requests; the result is reported here for the spatial bridge.
 
 #pragma once

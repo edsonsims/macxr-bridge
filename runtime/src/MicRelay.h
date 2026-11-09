@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: the headset microphone on the Mac, like Quest Link's microphone on Windows.
+// MacXR Bridge: the headset microphone on the Mac, like Quest Link's microphone on Windows.
 // The client streams the Quest mic on the camera channel (MsgKind::Mic). The runtime:
-//  - forwards it over UDP on localhost to the "Quest 3 Microphone" audio driver (link-para-mac/mic-driver),
+//  - forwards it over UDP on localhost to the "Headset Microphone" audio driver (macxr-bridge/mic-driver),
 //    so every app, Unity's Microphone class included, records from the headset;
 //  - keeps the last two seconds for Unity (oxrsys_mic_pull) when the driver is not installed;
 //  - while an XrInstance lives, makes that device the default input (restored afterwards;
@@ -22,7 +22,7 @@ struct OxrsysMicStatus
     uint32_t sampleRate;
     float lastAgeMs;           // time since the last one (< 0: never)
     float level;               // RMS of the last message, 0..1
-    uint32_t driverInstalled;  // the "Quest 3 Microphone" device exists
+    uint32_t driverInstalled;  // the "Headset Microphone" device exists
     uint32_t isDefaultInput;   // it is the system's default input now
     uint32_t reserved[2];
 };
@@ -39,7 +39,7 @@ public:
 
     void OnInstanceCreated();
     void OnInstanceDestroyed();
-    bool SetDefaultInput(bool useQuestMic);
+    bool SetDefaultInput(bool useHeadsetMic);
 
 private:
     MicRelay() = default;

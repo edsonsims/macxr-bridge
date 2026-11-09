@@ -4,9 +4,12 @@
 #include "Config.h"
 #include "Instance.h"
 #include "TrackingReceiver.h"
+#include "TrackingTape.h"
 #include <glm/gtc/quaternion.hpp>
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
+#include <cstring>
 #include <cctype>
 #include <cmath>
 #include <initializer_list>
@@ -115,7 +118,7 @@ bool IsHandInteractionComponent(const std::string& componentPath)
            componentPath.ends_with("_meta/click"); // XR_META_hand_tracking_microgestures
 }
 
-// Link para Mac: XR_META_hand_tracking_microgestures components -> the client's button bits (0 if not one).
+// MacXR Bridge: XR_META_hand_tracking_microgestures components -> the client's button bits (0 if not one).
 uint32_t MicrogestureBit(InputManager::Hand hand, const std::string& componentPath)
 {
     using namespace oxr::protocol;
@@ -209,9 +212,57 @@ XrSpaceVelocity ReadTrackedVelocity(bool linearValid, bool angularValid,
 
 } // namespace
 
+namespace
+{
+std::atomic<InputManager*> gActiveInputManager{nullptr};
+
+// Yaw-only, gravity-aligned orientation: the head forward vector projected onto the horizontal (XZ) plane,
+// keeping only the rotation about world-up (+Y).
+glm::quat YawOnly(const glm::quat& orientation)
+{
+    glm::vec3 forward = orientation * glm::vec3(0.0f, 0.0f, -1.0f);
+    float yaw = std::atan2(-forward.x, -forward.z);
+    if (!std::isfinite(yaw))
+    {
+        yaw = 0.0f;
+    }
+    return glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+}
+} // namespace
+
 InputManager::InputManager()
     : frameXboxLayout_(std::getenv("OXRSYS_FRAME_XBOX") != nullptr)
 {
+    gActiveInputManager.store(this);
+}
+
+InputManager::~InputManager()
+{
+    InputManager* self = this;
+    gActiveInputManager.compare_exchange_strong(self, nullptr);
+}
+
+InputManager* InputManager::Active()
+{
+    return gActiveInputManager.load();
+}
+
+bool InputManager::GetLocalReference(glm::vec3& position, glm::quat& yaw) const
+{
+    std::lock_guard<std::mutex> lock(localReferenceMutex_);
+    position = localReferencePosition_;
+    yaw = localReferenceYaw_;
+    return localReferenceCaptured_;
+}
+
+void InputManager::SetLocalReference(const glm::vec3& position, const glm::quat& headOrientation)
+{
+    std::lock_guard<std::mutex> lock(localReferenceMutex_);
+    localReferencePosition_ = position;
+    localReferenceYaw_ = YawOnly(headOrientation);
+    localReferenceCaptured_ = true;
+    spdlog::info("InputManager: LOCAL reference set to pos=({:.3f}, {:.3f}, {:.3f})", position.x, position.y,
+                 position.z);
 }
 
 void InputManager::SetTrackingReceiver(TrackingReceiver* receiver)
@@ -277,10 +328,18 @@ void InputManager::UpdateFromStreaming()
     // gravity-aligned and yaw-zeroed. Without this the runtime treated LOCAL as the
     // STAGE (floor) origin, so the view sat ~eye-height too high in LOCAL space and
     // content authored at LOCAL y=0 appeared on the physical floor.
-    if (!localReferenceCaptured_)
+    bool captured;
+    {
+        std::lock_guard<std::mutex> lock(localReferenceMutex_);
+        captured = localReferenceCaptured_;
+    }
+    if (!captured)
     {
         RecenterLocalReference();
-        localReferenceCaptured_ = true;
+        {
+            std::lock_guard<std::mutex> lock(localReferenceMutex_);
+            localReferenceCaptured_ = true;
+        }
         spdlog::info("InputManager: captured LOCAL reference origin pos=({:.3f}, {:.3f}, {:.3f}) "
                      "(STAGE-relative eye height={:.3f}m)",
                      localReferencePosition_.x, localReferencePosition_.y,
@@ -496,17 +555,9 @@ XrPosef InputManager::GetHeadPose() const
 
 void InputManager::RecenterLocalReference()
 {
+    std::lock_guard<std::mutex> lock(localReferenceMutex_);
     localReferencePosition_ = headPosition_;
-
-    // Yaw-only, gravity-aligned orientation: project the head forward vector onto
-    // the horizontal (XZ) plane and keep only the rotation about world-up (+Y).
-    glm::vec3 forward = headQuat_ * glm::vec3(0.0f, 0.0f, -1.0f);
-    float yaw = std::atan2(-forward.x, -forward.z);
-    if (!std::isfinite(yaw))
-    {
-        yaw = 0.0f;
-    }
-    localReferenceYaw_ = glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+    localReferenceYaw_ = YawOnly(headQuat_);
 }
 
 XrPosef InputManager::GetReferenceSpacePose(XrReferenceSpaceType referenceSpaceType) const
@@ -521,6 +572,7 @@ XrPosef InputManager::GetReferenceSpacePose(XrReferenceSpaceType referenceSpaceT
     // the client's floor-relative pose untouched.
     const float stageOffset = Config::Get().GetValues().stageHeightOffsetM;
     const float floorOriginY = -stageOffset;
+    std::lock_guard<std::mutex> lock(localReferenceMutex_);
 
     switch (referenceSpaceType)
     {
@@ -541,7 +593,7 @@ XrPosef InputManager::GetReferenceSpacePose(XrReferenceSpaceType referenceSpaceT
             }
             else
             {
-                // Link para Mac: before the first streamed head pose, LOCAL still sits at eye level
+                // MacXR Bridge: before the first streamed head pose, LOCAL still sits at eye level
                 // (the default head position), never on the floor. Unity's OpenXR plugin treats a
                 // LOCAL_FLOOR that coincides with LOCAL as "floor unknown" and re-creates the Floor
                 // app space every frame, which breaks xrEndFrame for OVRPlugin.
@@ -1412,7 +1464,7 @@ void InputManager::GetHandJointLocations(Hand hand, XrHandJointLocationEXT* join
         {
             const glm::vec4& joint = handState.joints[i];
             joints[i].locationFlags = validFlags;
-            // Link para Mac: real per-joint orientation from the headset when the client sends it.
+            // MacXR Bridge: real per-joint orientation from the headset when the client sends it.
             joints[i].pose = MakePose(glm::vec3(joint.x, joint.y, joint.z),
                                       handState.hasRotations ? handState.rotations[i] : orientation);
             joints[i].radius = joint.w;
@@ -1426,3 +1478,45 @@ void InputManager::GetHandJointLocations(Hand hand, XrHandJointLocationEXT* join
                    controllerPose.orientation.y, controllerPose.orientation.z);
     GenerateHandJoints(hand, pos, rot, joints, jointCount);
 }
+
+// MacXR Bridge: the LOCAL reference space for session replays (x y z, then the yaw-only orientation qx qy qz qw).
+// A recording keeps the reference it was made with; a replay sets it back, so the replayed head and everything
+// placed from it land where they did, whatever the live headset's position was when this Play started.
+extern "C" {
+
+__attribute__((visibility("default")))
+int oxrsys_local_reference_get(float* out7)
+{
+    InputManager* input = InputManager::Active();
+    if (input == nullptr || out7 == nullptr) return 0;
+    glm::vec3 position;
+    glm::quat yaw;
+    const bool captured = input->GetLocalReference(position, yaw);
+    const float values[7] = {position.x, position.y, position.z, yaw.x, yaw.y, yaw.z, yaw.w};
+    std::memcpy(out7, values, sizeof(values));
+    return captured ? 1 : 0;
+}
+
+__attribute__((visibility("default")))
+int oxrsys_local_reference_set(const float* in7)
+{
+    InputManager* input = InputManager::Active();
+    if (input == nullptr || in7 == nullptr) return 0;
+    input->SetLocalReference(glm::vec3(in7[0], in7[1], in7[2]), glm::quat(in7[6], in7[3], in7[4], in7[5]));
+    return 1;
+}
+
+// For sessions recorded without a reference: the head pose of the tape's first packet (deterministic).
+__attribute__((visibility("default")))
+int oxrsys_local_reference_from_tape()
+{
+    InputManager* input = InputManager::Active();
+    oxr::protocol::TrackingPacket packet = {};
+    if (input == nullptr || !oxrsys::tracking_tape::FirstPacket(&packet, sizeof(packet))) return 0;
+    input->SetLocalReference(glm::vec3(packet.headPosition[0], packet.headPosition[1], packet.headPosition[2]),
+                             glm::quat(packet.headOrientation[3], packet.headOrientation[0],
+                                       packet.headOrientation[1], packet.headOrientation[2]));
+    return 1;
+}
+
+} // extern "C"

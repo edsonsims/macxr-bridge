@@ -23,14 +23,14 @@ using namespace oxr::protocol::camera;
 
 namespace
 {
-constexpr const char* kDeviceUid = "LinkParaMac_QuestMic_UID"; // must match mic-driver/QuestMic.c
+constexpr const char* kDeviceUid = "MacXRBridge_HeadsetMic_UID"; // must match mic-driver/HeadsetMic.c
 
 int64_t NowNs()
 {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-AudioObjectID FindQuestMic()
+AudioObjectID FindHeadsetMic()
 {
     CFStringRef uid = CFStringCreateWithCString(kCFAllocatorDefault, kDeviceUid, kCFStringEncodingUTF8);
     AudioObjectID device = kAudioObjectUnknown;
@@ -162,29 +162,29 @@ OxrsysMicStatus MicRelay::Status()
     const int64_t last = lastNs_.load();
     status.lastAgeMs = last == 0 ? -1.0f : static_cast<float>((NowNs() - last) / 1e6);
     status.level = level_.load();
-    const AudioObjectID quest = FindQuestMic();
+    const AudioObjectID quest = FindHeadsetMic();
     status.driverInstalled = quest != kAudioObjectUnknown ? 1u : 0u;
     status.isDefaultInput = quest != kAudioObjectUnknown && DefaultInput() == quest ? 1u : 0u;
     return status;
 }
 
-bool MicRelay::SetDefaultInput(bool useQuestMic)
+bool MicRelay::SetDefaultInput(bool useHeadsetMic)
 {
     std::lock_guard<std::mutex> lock(defaultMutex_);
-    if (useQuestMic)
+    if (useHeadsetMic)
     {
-        const AudioObjectID quest = FindQuestMic();
+        const AudioObjectID quest = FindHeadsetMic();
         if (quest == kAudioObjectUnknown) return false;
         const AudioObjectID current = DefaultInput();
         if (current == quest) return true;
         if (!switched_) previousDefault_ = current;
         switched_ = SetDefault(quest) || switched_;
-        if (switched_) spdlog::info("MicRelay: default input -> Quest 3 Microphone");
+        if (switched_) spdlog::info("MicRelay: default input -> Headset Microphone");
         return switched_;
     }
     if (!switched_) return true;
     switched_ = false;
-    const AudioObjectID quest = FindQuestMic();
+    const AudioObjectID quest = FindHeadsetMic();
     if (previousDefault_ != kAudioObjectUnknown && (quest == kAudioObjectUnknown || DefaultInput() == quest))
     {
         SetDefault(previousDefault_);
@@ -227,9 +227,9 @@ int oxrsys_mic_status(OxrsysMicStatus* out)
 
 // 1: the Quest microphone becomes the default input; 0: the previous one comes back. Returns 1 on success.
 __attribute__((visibility("default")))
-int oxrsys_mic_set_default(int useQuestMic)
+int oxrsys_mic_set_default(int useHeadsetMic)
 {
-    return MicRelay::Get().SetDefaultInput(useQuestMic != 0) ? 1 : 0;
+    return MicRelay::Get().SetDefaultInput(useHeadsetMic != 0) ? 1 : 0;
 }
 
 }

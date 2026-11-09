@@ -440,7 +440,7 @@ SocketHandle CreateLoopbackListener(uint16_t port)
     return CreateListener(port, INADDR_LOOPBACK);
 }
 
-// Link para Mac: the spatial and camera channels also accept the headset over Wi-Fi (like Air Link),
+// MacXR Bridge: the spatial and camera channels also accept the headset over Wi-Fi (like Air Link),
 // so they listen on every interface; AcceptLocalWithTimeout keeps out anything beyond the local network.
 SocketHandle CreateLanListener(uint16_t port)
 {
@@ -1389,7 +1389,7 @@ void StreamingServer::TcpSpatialThread()
         }
 
         spdlog::info("StreamingServer: USB ADB spatial client connected");
-        // Link para Mac: the spatial channel carries the anchors/scene proxy (SpatialProxy).
+        // MacXR Bridge: the spatial channel carries the anchors/scene proxy (SpatialProxy).
         SpatialProxy::Get().AttachTransport([this, clientSocket](const void* data, size_t size) {
             std::lock_guard<std::mutex> lock(tcpSocketMutex_);
             if (tcpSpatialClientSocket_ != clientSocket)

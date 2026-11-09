@@ -14,7 +14,7 @@ public:
     {
         Reference,
         Action,
-        Remote, // Link para Mac: a space that lives in the headset's runtime (spatial anchor, scene entity)
+        Remote, // MacXR Bridge: a space that lives in the headset's runtime (spatial anchor, scene entity)
     };
 
     // Reference space constructor

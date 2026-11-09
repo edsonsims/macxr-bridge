@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: the headset microphone, captured with AAudio and sent to the macOS runtime on the camera
+// MacXR Bridge: the headset microphone, captured with AAudio and sent to the macOS runtime on the camera
 // channel (MsgKind::Mic), like Quest Link exposes the Quest microphone to the PC. The runtime hands it to
-// the "Quest 3 Microphone" audio driver on the Mac, so any app (Unity's Microphone class included) records
+// the "Headset Microphone" audio driver on the Mac, so any app (Unity's Microphone class included) records
 // the voice from the headset.
 
 #pragma once

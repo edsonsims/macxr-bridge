@@ -642,7 +642,7 @@ TEST_CASE("Loader-backed runtime reports configured product version", "[runtime]
     XR_CHECK(xrGetInstanceProperties(instance, &properties));
     CHECK(properties.runtimeVersion ==
           XR_MAKE_VERSION(OXRSYS_VERSION_MAJOR, OXRSYS_VERSION_MINOR, OXRSYS_VERSION_PATCH));
-    // Link para Mac: OVRPlugin only accepts runtimes whose name mentions Meta/Oculus.
+    // MacXR Bridge: OVRPlugin only accepts runtimes whose name mentions Meta/Oculus.
     CHECK(std::string(properties.runtimeName) == "OXRSys Runtime for Meta Quest");
 
     xrDestroyInstance(instance);
@@ -1093,7 +1093,7 @@ TEST_CASE("Runtime enumerates and creates LOCAL_FLOOR reference spaces", "[runti
     XR_CHECK(xrLocateSpace(localFloorSpace, context.localSpace, sampleTime, &location));
     CHECK((location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0);
     CHECK((location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0);
-    // Link para Mac: before the first streamed head pose LOCAL sits at the default eye height (1.6 m),
+    // MacXR Bridge: before the first streamed head pose LOCAL sits at the default eye height (1.6 m),
     // so LOCAL_FLOOR is 1.6 m below it (a LOCAL_FLOOR equal to LOCAL makes Unity re-create the Floor
     // app space every frame).
     CHECK_THAT(location.pose.position.x, WithinAbs(0.0f, 0.001f));
@@ -1292,7 +1292,7 @@ TEST_CASE("Loopback tracking reaches OpenXR velocities and STAGE bounds", "[runt
     XR_CHECK(xrCreateReferenceSpace(context.session, &createInfo, &stageSpace));
 
     XrExtent2Df bounds = {123.0f, 456.0f};
-    // Link para Mac: a default 3 m x 3 m play area is reported until the headset sends its guardian.
+    // MacXR Bridge: a default 3 m x 3 m play area is reported until the headset sends its guardian.
     CHECK(xrGetReferenceSpaceBoundsRect(context.session, XR_REFERENCE_SPACE_TYPE_STAGE, &bounds) ==
           XR_SUCCESS);
     CHECK(bounds.width == 3.0f);
@@ -1402,7 +1402,7 @@ TEST_CASE("Loopback tracking reaches OpenXR velocities and STAGE bounds", "[runt
 
     packet.trackingFlags &= ~oxr::protocol::TRACKING_FLAG_STAGE_BOUNDS_VALID;
     REQUIRE(waitForPacket(sizeof(packet), [&] {
-        // Link para Mac: back to the default 3 m x 3 m play area (reported as XR_SUCCESS).
+        // MacXR Bridge: back to the default 3 m x 3 m play area (reported as XR_SUCCESS).
         return boundsResult == XR_SUCCESS && bounds.width == 3.0f && bounds.height == 3.0f;
     }));
     CHECK(CountStageChanges(context) == 1);
@@ -1416,7 +1416,7 @@ TEST_CASE("Loopback tracking reaches OpenXR velocities and STAGE bounds", "[runt
         REQUIRE(waitForPacket(size, [&] {
             return velocity.velocityFlags == validVelocity &&
                    velocity.linearVelocity.x == packet.headLinearVelocity[0] &&
-                   boundsResult == XR_SUCCESS && bounds.width == 3.0f;  // Link para Mac: default play area
+                   boundsResult == XR_SUCCESS && bounds.width == 3.0f;  // MacXR Bridge: default play area
         }));
         CHECK(bounds.width == 3.0f);
         CHECK(bounds.height == 3.0f);
@@ -1435,7 +1435,7 @@ TEST_CASE("Loopback tracking reaches OpenXR velocities and STAGE bounds", "[runt
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     } while ((bounds.width != 3.0f || velocity.velocityFlags != 0) &&
              std::chrono::steady_clock::now() < deadline);
-    // Link para Mac: with the client gone the default 3 m x 3 m play area is reported again.
+    // MacXR Bridge: with the client gone the default 3 m x 3 m play area is reported again.
     CHECK(boundsResult == XR_SUCCESS);
     CHECK(bounds.width == 3.0f);
     CHECK(bounds.height == 3.0f);
@@ -1451,7 +1451,7 @@ TEST_CASE("Loopback tracking reaches OpenXR velocities and STAGE bounds", "[runt
             XR_CHECK(xrLocateSpace(viewSpace, stageSpace, sampleTime, &location));
             CHECK(velocity.velocityFlags == 0);
             CHECK(xrGetReferenceSpaceBoundsRect(context.session, XR_REFERENCE_SPACE_TYPE_STAGE, &bounds) ==
-                  XR_SUCCESS);  // Link para Mac: default play area while no client is admitted
+                  XR_SUCCESS);  // MacXR Bridge: default play area while no client is admitted
             CHECK(bounds.width == 3.0f);
         }
         CHECK(CountStageChanges(context) == 0);
@@ -3870,7 +3870,7 @@ TEST_CASE("Reference space bounds remain unavailable without boundary data", "[r
         XrExtent2Df bounds = {123.0f, 456.0f};
         if (space == XR_REFERENCE_SPACE_TYPE_STAGE)
         {
-            // Link para Mac: default 3 m x 3 m play area until the headset reports its guardian.
+            // MacXR Bridge: default 3 m x 3 m play area until the headset reports its guardian.
             CHECK(xrGetReferenceSpaceBoundsRect(context.session, space, &bounds) == XR_SUCCESS);
             CHECK(bounds.width == 3.0f);
             CHECK(bounds.height == 3.0f);

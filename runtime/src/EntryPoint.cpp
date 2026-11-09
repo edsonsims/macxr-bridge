@@ -265,12 +265,12 @@ static std::vector<ExtensionInfo> GetSupportedExtensionInfos()
         {XR_EXT_DEBUG_UTILS_EXTENSION_NAME, XR_EXT_debug_utils_SPEC_VERSION},
         {VALVE_FRAME_CONTROLLER_EXTENSION_NAME, VALVE_FRAME_CONTROLLER_SPEC_VERSION},
 #ifdef XR_FB_passthrough
-        // Link para Mac: the headset client already composites the app over the Quest passthrough; this
+        // MacXR Bridge: the headset client already composites the app over the Quest passthrough; this
         // exposes it the Meta way (OVRPassthroughLayer, OVRManager.IsInsightPassthroughSupported).
         {XR_FB_PASSTHROUGH_EXTENSION_NAME, XR_FB_passthrough_SPEC_VERSION},
 #endif
 #ifdef XR_FB_hand_tracking_aim
-        // Link para Mac: OVRPlugin/ISDK hands need the FB aim state (pinch strengths, pointer pose)
+        // MacXR Bridge: OVRPlugin/ISDK hands need the FB aim state (pinch strengths, pointer pose)
         // and the hand scale carried by XR_FB_hand_tracking_mesh; without HandScale > 0 the
         // Interaction SDK marks hands as "not connected" and never shows them.
         {XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME, XR_FB_hand_tracking_aim_SPEC_VERSION},
@@ -279,32 +279,32 @@ static std::vector<ExtensionInfo> GetSupportedExtensionInfos()
         {XR_FB_HAND_TRACKING_MESH_EXTENSION_NAME, XR_FB_hand_tracking_mesh_SPEC_VERSION},
 #endif
 #ifdef XR_EXT_local_floor
-        // Link para Mac: Unity's OpenXR plugin keeps re-creating the Floor app space every frame unless the
+        // MacXR Bridge: Unity's OpenXR plugin keeps re-creating the Floor app space every frame unless the
         // runtime advertises the LOCAL_FLOOR extension (the core-1.1 path alone does not satisfy it).
         {XR_EXT_LOCAL_FLOOR_EXTENSION_NAME, XR_EXT_local_floor_SPEC_VERSION},
 #endif
 #ifdef XR_META_headset_id
-        // Link para Mac: Meta's Unity OpenXR feature (MetaXRFeature/OVRPlugin) only activates on runtimes
+        // MacXR Bridge: Meta's Unity OpenXR feature (MetaXRFeature/OVRPlugin) only activates on runtimes
         // that expose XR_META_headset_id; it is a system-properties UUID and costs nothing to provide.
         {XR_META_HEADSET_ID_EXTENSION_NAME, XR_META_headset_id_SPEC_VERSION},
 #endif
 #ifdef XR_META_touch_controller_plus
         {XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME, XR_META_touch_controller_plus_SPEC_VERSION},
 #endif
-        // Link para Mac: thumb microgestures relayed from the headset as button bits (InputManager).
+        // MacXR Bridge: thumb microgestures relayed from the headset as button bits (InputManager).
         {XR_META_HAND_TRACKING_MICROGESTURES_EXTENSION_NAME, XR_META_hand_tracking_microgestures_SPEC_VERSION},
     };
-    // Link para Mac: anchors, persistence and Scene are proxied to the headset (SpatialEntity.cpp).
+    // MacXR Bridge: anchors, persistence and Scene are proxied to the headset (SpatialEntity.cpp).
     for (const auto& [name, version] : oxrsys::spatial_entity::Extensions())
     {
         extensions.push_back({name, version});
     }
-    // Link para Mac: environment ray casts answered from the depth the headset relays (EnvironmentRaycast.cpp).
+    // MacXR Bridge: environment ray casts answered from the depth the headset relays (EnvironmentRaycast.cpp).
     for (const auto& [name, version] : oxrsys::environment_raycast::Extensions())
     {
         extensions.push_back({name, version});
     }
-    // Link para Mac: refresh rate, color space and passthrough preferences (MinorExtensions.cpp).
+    // MacXR Bridge: refresh rate, color space and passthrough preferences (MinorExtensions.cpp).
     for (const auto& [name, version] : oxrsys::minor_extensions::Extensions())
     {
         extensions.push_back({name, version});
@@ -712,7 +712,7 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrCreateInstance(
     spdlog::info("OXRSys: xrCreateInstance requested OpenXR API {}.{}.{} (runtime built against {}.{}.{})",
                  XR_VERSION_MAJOR(requestedApiVersion), XR_VERSION_MINOR(requestedApiVersion), XR_VERSION_PATCH(requestedApiVersion),
                  XR_VERSION_MAJOR(XR_CURRENT_API_VERSION), XR_VERSION_MINOR(XR_CURRENT_API_VERSION), XR_VERSION_PATCH(XR_CURRENT_API_VERSION));
-    // Link para Mac: patch versions never change the API, so accept any patch of a supported major.minor
+    // MacXR Bridge: patch versions never change the API, so accept any patch of a supported major.minor
     // (OVRPlugin asks for a newer 1.1.x patch than the OpenXR SDK this runtime was built against).
     if (requestedApiVersion == 0 || XR_VERSION_MAJOR(requestedApiVersion) != XR_VERSION_MAJOR(XR_CURRENT_API_VERSION) ||
         XR_VERSION_MINOR(requestedApiVersion) > XR_VERSION_MINOR(XR_CURRENT_API_VERSION))
@@ -814,7 +814,7 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrPollEvent(
     {
         return XR_ERROR_HANDLE_INVALID;
     }
-    // Link para Mac: convert the headset's spatial completion events on the app thread.
+    // MacXR Bridge: convert the headset's spatial completion events on the app thread.
     oxrsys::spatial_entity::DrainEvents(inst, gSession.get());
     const XrResult r = inst->PollEvent(eventData);
     if (r == XR_SUCCESS && eventData != nullptr)
@@ -1744,7 +1744,7 @@ static bool IsValidBindingPathForProfile(const Instance* instance,
             return (topLevelPath == "/user/hand/left" || topLevelPath == "/user/hand/right") &&
                    instance->GetApiVersion() >= XR_MAKE_VERSION(1, 1, 0);
         }
-        // Link para Mac: XR_META_hand_tracking_microgestures extends this profile.
+        // MacXR Bridge: XR_META_hand_tracking_microgestures extends this profile.
         static const std::unordered_set<std::string> microgestureComponents = {
             "swipe_left_meta/click", "swipe_right_meta/click", "swipe_forward_meta/click",
             "swipe_backward_meta/click", "tap_thumb_meta/click",
@@ -3336,7 +3336,7 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrLocateHandJointsEXT(
 }
 
 #ifdef XR_FB_hand_tracking_mesh
-// Link para Mac: minimal XR_FB_hand_tracking_mesh. We have no skinned hand mesh to hand out; apps that
+// MacXR Bridge: minimal XR_FB_hand_tracking_mesh. We have no skinned hand mesh to hand out; apps that
 // render Meta's hand mesh (OVRMesh) get an empty mesh and fall back, while the extension's other
 // payload (XrHandTrackingScaleFB chained to xrLocateHandJointsEXT) is what OVRPlugin/ISDK really need.
 static XRAPI_ATTR XrResult XRAPI_CALL OxrGetHandMeshFB(XrHandTrackerEXT handTracker, XrHandTrackingMeshFB* mesh)
@@ -3374,7 +3374,7 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetHandMeshFB(XrHandTrackerEXT handTrac
 
 #ifdef XR_FB_passthrough
 // ============================================================================
-// XR_FB_passthrough (Link para Mac). The Quest client owns the real passthrough layer; here we keep
+// XR_FB_passthrough (MacXR Bridge). The Quest client owns the real passthrough layer; here we keep
 // the app's objects and intent, and Session::EndFrame relays visibility/style to the client.
 // ============================================================================
 
@@ -4161,7 +4161,7 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetInstanceProcAddr(
         inst = GetInstance(instance);
         if (inst == nullptr)
         {
-            // Link para Mac diagnostics: who asks for which function with which handle.
+            // MacXR Bridge diagnostics: who asks for which function with which handle.
             spdlog::warn("OXRSys: xrGetInstanceProcAddr('{}') with unknown instance handle {:#x} (current instance {:#x})",
                          name, reinterpret_cast<uint64_t>(instance), gInstance ? gInstance->GetHandle() : 0ull);
             return XR_ERROR_HANDLE_INVALID;
@@ -4174,7 +4174,7 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetInstanceProcAddr(
         return XR_ERROR_FUNCTION_UNSUPPORTED;
     }
 
-    // Link para Mac: spatial entity / scene functions proxied to the headset
+    // MacXR Bridge: spatial entity / scene functions proxied to the headset
     if (oxrsys::spatial_entity::GetProcAddr(name, function))
     {
         return *function != nullptr ? XR_SUCCESS : XR_ERROR_FUNCTION_UNSUPPORTED;

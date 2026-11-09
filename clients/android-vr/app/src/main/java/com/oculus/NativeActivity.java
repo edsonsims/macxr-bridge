@@ -49,7 +49,7 @@ public class NativeActivity extends android.app.NativeActivity
 
     private static native void nativeSetUsbNetwork(long networkHandle);
     private static native void nativeSetScenePermission(boolean granted);
-    // Link para Mac: headset microphone and battery for the macOS runtime.
+    // MacXR Bridge: headset microphone and battery for the macOS runtime.
     private static native void nativeSetMicPermission(boolean granted);
     private static native void nativeSetBattery(float percent, float temperatureC, boolean charging);
     private static final String MIC_PERMISSION = android.Manifest.permission.RECORD_AUDIO;
@@ -69,7 +69,7 @@ public class NativeActivity extends android.app.NativeActivity
         }
     };
 
-    // Link para Mac: Scene (room) data for the macOS runtime needs this runtime permission.
+    // MacXR Bridge: Scene (room) data for the macOS runtime needs this runtime permission.
     private static final String SCENE_PERMISSION = "com.oculus.permission.USE_SCENE";
     private static final int SCENE_PERMISSION_REQUEST = 0x5C3E;
     private static final String CAMERA_PERMISSION = "horizonos.permission.HEADSET_CAMERA";
@@ -182,7 +182,7 @@ public class NativeActivity extends android.app.NativeActivity
 
     private void startHeadsetCamera()
     {
-        if (headsetCamera != null) headsetCamera.start(0, 30); // Link para Mac: 30 fps for recordings
+        if (headsetCamera != null) headsetCamera.start(0, 30); // MacXR Bridge: 30 fps for recordings
     }
 
     private void requestScenePermission()
@@ -252,7 +252,7 @@ public class NativeActivity extends android.app.NativeActivity
         Log.i(TAG, "onResume");
         super.onResume();
         probeUsbPermissionTargets(getIntent());
-        // Link para Mac: the system closes the camera while the headset sleeps; reopen it on resume.
+        // MacXR Bridge: the system closes the camera while the headset sleeps; reopen it on resume.
         if (headsetCamera != null && checkSelfPermission(CAMERA_PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED)
         {
             startHeadsetCamera();

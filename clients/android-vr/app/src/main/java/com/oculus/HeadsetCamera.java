@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: captures a Quest passthrough camera with Camera2, JPEG-encodes each frame and
+// MacXR Bridge: captures a Quest passthrough camera with Camera2, JPEG-encodes each frame and
 // hands it to the native client (nativePushCameraFrame) together with the camera intrinsics and
 // its pose relative to the head. Needs horizonos.permission.HEADSET_CAMERA (HzOS v74+).
 
@@ -138,7 +138,7 @@ public final class HeadsetCamera
         if (map == null) return new Size(640, 480);
         Size[] sizes = map.getOutputSizes(ImageFormat.JPEG);
         if (sizes == null || sizes.length == 0) return new Size(640, 480);
-        // Link para Mac: 1280x960 (4:3, the full sensor width) — sharp enough for mixed reality recordings and
+        // MacXR Bridge: 1280x960 (4:3, the full sensor width) — sharp enough for mixed reality recordings and
         // still cheap over USB as JPEG. The inference model downsamples anyway.
         Size best = sizes[0];
         long bestScore = Long.MAX_VALUE;
@@ -187,7 +187,7 @@ public final class HeadsetCamera
                    " pose t=(" + px + "," + py + "," + pz + ") q=(" + qx + "," + qy + "," + qz + "," + qw + ")");
     }
 
-    // Link para Mac: the camera is refused while the headset sleeps (validateClientPermissionsLocked) and is
+    // MacXR Bridge: the camera is refused while the headset sleeps (validateClientPermissionsLocked) and is
     // taken away when another app grabs it; keep retrying while we are supposed to be running.
     private void retryOpenLater(int preferredEye)
     {

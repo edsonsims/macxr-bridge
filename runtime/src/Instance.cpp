@@ -20,7 +20,7 @@ Instance::Instance(XrVersion apiVersion, const std::vector<std::string>& enabled
 {
     Runtime::Get().RegisterHandle(handle_, this);
     Runtime::Get().SetInstance(this);
-    MicRelay::Get().OnInstanceCreated(); // Link para Mac: the Quest microphone is the default input while the app runs
+    MicRelay::Get().OnInstanceCreated(); // MacXR Bridge: the Quest microphone is the default input while the app runs
     spdlog::info("OXRSys: Instance created");
 }
 
@@ -63,7 +63,7 @@ XrResult Instance::GetSystemProperties(XrSystemId systemId, XrSystemProperties* 
     properties->type = XR_TYPE_SYSTEM_PROPERTIES;
     properties->systemId = 1;
     properties->vendorId = 0;
-    // Link para Mac: OVRPlugin (Meta XR SDK) refuses runtimes whose name lacks "Meta"/"Oculus"
+    // MacXR Bridge: OVRPlugin (Meta XR SDK) refuses runtimes whose name lacks "Meta"/"Oculus"
     // ("Non-Oculus OpenXR runtime is not supported") and reads the system name to pick the headset model.
     std::strncpy(properties->systemName, "Meta Quest 3", XR_MAX_SYSTEM_NAME_SIZE);
     properties->graphicsProperties.maxSwapchainImageWidth = 4096;
@@ -98,16 +98,16 @@ XrResult Instance::GetSystemProperties(XrSystemId systemId, XrSystemProperties* 
 #endif
         else if (oxrsys::minor_extensions::FillSystemProperties(next, IsExtensionEnabled(XR_FB_COLOR_SPACE_EXTENSION_NAME)))
         {
-            // Link para Mac: XrSystemColorSpacePropertiesFB (MinorExtensions.cpp).
+            // MacXR Bridge: XrSystemColorSpacePropertiesFB (MinorExtensions.cpp).
         }
         else if (oxrsys::environment_raycast::FillSystemProperties(
                      next, IsExtensionEnabled(oxrsys::environment_raycast::RaycastExtensionName())))
         {
-            // Link para Mac: XrSystemEnvironmentRaycastPropertiesMETA (EnvironmentRaycast.cpp).
+            // MacXR Bridge: XrSystemEnvironmentRaycastPropertiesMETA (EnvironmentRaycast.cpp).
         }
         else if (next->type == XR_TYPE_SYSTEM_SPATIAL_ENTITY_PROPERTIES_FB)
         {
-            // Link para Mac: anchors are proxied to the headset (SpatialEntity.cpp).
+            // MacXR Bridge: anchors are proxied to the headset (SpatialEntity.cpp).
             auto* props = reinterpret_cast<XrSystemSpatialEntityPropertiesFB*>(next);
             props->supportsSpatialEntity = IsExtensionEnabled(XR_FB_SPATIAL_ENTITY_EXTENSION_NAME) ? XR_TRUE : XR_FALSE;
         }

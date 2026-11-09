@@ -90,6 +90,15 @@ void DetachReceiver(TrackingReceiver* receiver)
 bool Recording() { return gRecording.load(); }
 bool Replaying() { return gReplaying.load(); }
 
+bool FirstPacket(void* out, size_t size)
+{
+    std::lock_guard<std::mutex> lock(gMutex);
+    if (gTape.empty() || out == nullptr) return false;
+    std::memset(out, 0, size);
+    std::memcpy(out, gTape.front().bytes.data(), std::min(size, gTape.front().bytes.size()));
+    return true;
+}
+
 void Record(const uint8_t* data, size_t size)
 {
     std::lock_guard<std::mutex> lock(gMutex);

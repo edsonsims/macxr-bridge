@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: small Meta extensions OVRPlugin asks for on Quest, so OVRManager behaves as it does over
+// MacXR Bridge: small Meta extensions OVRPlugin asks for on Quest, so OVRManager behaves as it does over
 // Quest Link: XR_FB_display_refresh_rate (rates of the Quest 3; the current one is the rate negotiated with
 // the headset), XR_FB_color_space (Rec.2020 like Quest 3; the app's choice is accepted) and
 // XR_META_passthrough_preferences (the system's "passthrough by default" flag; off).

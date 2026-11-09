@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: runtime side of the spatial channel. Sends requests to the headset client,
+// MacXR Bridge: runtime side of the spatial channel. Sends requests to the headset client,
 // matches responses, keeps the latest streamed pose of every remote space and queues the
 // completion events the client forwards until the app thread drains them (xrPollEvent).
 

@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <array>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -38,6 +39,7 @@ public:
     };
 
     InputManager();
+    ~InputManager();
 
     // Set the tracking receiver to read poses from (streaming client)
     void SetTrackingReceiver(TrackingReceiver* receiver);
@@ -61,6 +63,12 @@ public:
 
     // Re-anchor the LOCAL reference to the current head pose (recenter).
     void RecenterLocalReference();
+    // MacXR Bridge: the LOCAL reference (position + yaw-only orientation). A session replay sets the one the
+    // session was recorded with, so the app's world lines up as it did, whatever the live headset does.
+    bool GetLocalReference(glm::vec3& position, glm::quat& yaw) const;
+    void SetLocalReference(const glm::vec3& position, const glm::quat& headOrientation);
+    // The InputManager of the running session (nullptr outside a session).
+    static InputManager* Active();
 
     // Controller poses (world space)
     XrPosef GetControllerPose(Hand hand) const;
@@ -143,6 +151,7 @@ private:
     // LOCAL reference space anchor, captured from the first streamed head pose
     // (and on recenter). Position is the HMD position at capture; orientation is
     // the yaw-only (gravity-aligned) component of the head orientation at capture.
+    mutable std::mutex localReferenceMutex_;
     bool localReferenceCaptured_ = false;
     glm::vec3 localReferencePosition_ = {0.0f, 0.0f, 0.0f};
     glm::quat localReferenceYaw_ = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);

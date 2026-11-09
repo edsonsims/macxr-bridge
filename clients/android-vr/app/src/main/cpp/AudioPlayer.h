@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: plays the Editor's audio mix on the headset (AAudio, low latency). PCM arrives over the
+// MacXR Bridge: plays the Editor's audio mix on the headset (AAudio, low latency). PCM arrives over the
 // camera channel (MsgKind::Audio); a small jitter buffer absorbs network bursts and the Mac/Quest clock
 // drift (it trims back to the target when it grows, and plays silence on underrun).
 

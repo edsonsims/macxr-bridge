@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: XR_META_environment_depth on the headset, relayed to the macOS runtime.
+// MacXR Bridge: XR_META_environment_depth on the headset, relayed to the macOS runtime.
 //
 // The Quest computes a depth map of the real room (the same one the Depth API / EnvironmentRaycast
 // use on device). This class acquires it a few times per second, reads the left eye back to the CPU

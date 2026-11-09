@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: XR_META_environment_raycast (+ the XR_EXT_future plumbing it needs), answered on the Mac
+// MacXR Bridge: XR_META_environment_raycast (+ the XR_EXT_future plumbing it needs), answered on the Mac
 // from the environment depth the headset relays over the camera channel (CameraRelay). This is what MRUK's
 // EnvironmentRaycastManager uses on device, so apps ray-cast against the real room in Play Mode unchanged.
 

@@ -294,7 +294,7 @@ void TrackingReceiver::StorePayload(const uint8_t* data, size_t size, const uint
     {
         return;
     }
-    // Link para Mac: session recording / replay (TrackingTape).
+    // MacXR Bridge: session recording / replay (TrackingTape).
     if (oxrsys::tracking_tape::Replaying())
     {
         return;
@@ -388,6 +388,12 @@ bool TrackingReceiver::GetPredictedPose(oxr::protocol::TrackingPacket& outPacket
 
     outPacket = history_.back().packet;
     if (history_.size() < 2)
+    {
+        return true;
+    }
+    // MacXR Bridge: a replayed session delivers the recorded poses as they are. Extrapolating them with the live
+    // network latency (larger over Wi-Fi) moved the replayed head, and so the session test labels, by 15-28 cm.
+    if (oxrsys::tracking_tape::Replaying())
     {
         return true;
     }

@@ -212,7 +212,7 @@ private:
     XrAction bButtonAction_ = XR_NULL_HANDLE;
     XrAction menuAction_ = XR_NULL_HANDLE;
     XrAction hapticAction_ = XR_NULL_HANDLE;
-    // Link para Mac: XR_META_hand_tracking_microgestures (swipe left/right/forward/backward, thumb tap).
+    // MacXR Bridge: XR_META_hand_tracking_microgestures (swipe left/right/forward/backward, thumb tap).
     bool microgesturesAvailable_ = false;
     XrAction microgestureActions_[5] = {};
     std::chrono::steady_clock::time_point microgestureUntil_[2][5] = {};
@@ -292,7 +292,7 @@ private:
     std::atomic<bool> shellPendingNetworkReset_{false};
     std::chrono::steady_clock::time_point lastUsbAdbRetryTime_;
     uint32_t usbAdbRetryAttempts_ = 0;
-    // Link para Mac: prefer USB ADB over a Wi-Fi announce that arrives first (spatial/camera are USB-only).
+    // MacXR Bridge: prefer USB ADB over a Wi-Fi announce that arrives first (spatial/camera are USB-only).
     std::atomic<int64_t> firstWifiAnnounceNs_{0};
     std::atomic<bool> usbRetryNow_{false};
     char serverIp_[64] = {};
@@ -359,12 +359,12 @@ private:
     std::array<protocol::HapticsCommand, 2> pendingHaptics_ = {};
     std::array<bool, 2> hasPendingHaptics_ = {};
 
-    // Link para Mac: anchors/scene proxy served to the runtime over the spatial channel.
+    // MacXR Bridge: anchors/scene proxy served to the runtime over the spatial channel.
     SpatialBridge spatialBridge_;
     EnvironmentDepth environmentDepth_;
     std::vector<const char*> enabledExtensionNames_;
 
-    // Link para Mac: the OpenXR app's XR_FB_passthrough intent relayed by the runtime. While the app
+    // MacXR Bridge: the OpenXR app's XR_FB_passthrough intent relayed by the runtime. While the app
     // controls passthrough, it overrides the server's passthrough_enabled setting for the streamed frame.
     std::mutex appPassthroughMutex_;
     protocol::PassthroughStyleCommand appPassthrough_ = {};

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: wire format of the "spatial" channel (TcpRecordType::Spatial, port 9948).
+// MacXR Bridge: wire format of the "spatial" channel (TcpRecordType::Spatial, port 9948).
 //
 // The macOS runtime does not own a tracking stack, so every spatial feature the headset has
 // (XR_FB_spatial_entity anchors and their persistence, XR_FB_scene room data, scene capture,

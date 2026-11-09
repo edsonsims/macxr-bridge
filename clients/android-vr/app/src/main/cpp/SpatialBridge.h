@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: headset side of the spatial channel. Executes the macOS runtime's spatial
+// MacXR Bridge: headset side of the spatial channel. Executes the macOS runtime's spatial
 // requests (anchors, persistence, queries, scene data) against the Quest's own OpenXR runtime,
 // forwards the async completion events and streams the poses of the resulting spaces in the
 // client's STAGE space.
@@ -36,7 +36,7 @@ public:
     // Stops serving; the caller closes the socket. Spaces created for the runtime are destroyed.
     void Stop();
     bool IsRunning() const { return running_.load(); }
-    // Link para Mac: true while the runtime is sending spatial requests (a room load). Over Wi-Fi every request is a
+    // MacXR Bridge: true while the runtime is sending spatial requests (a room load). Over Wi-Fi every request is a
     // network round trip and the Editor's main thread waits on them, so video can pause for a few seconds.
     bool BusyWithinNs(int64_t windowNs) const
     {

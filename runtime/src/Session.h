@@ -70,19 +70,19 @@ public:
     XrResult CreateReferenceSpace(const XrReferenceSpaceCreateInfo* createInfo, XrSpace* space);
     XrResult CreateActionSpace(XrAction action, XrPath subactionPath, const XrPosef& poseInSpace, XrSpace* space);
     XrResult DestroySpace(Space* space);
-    // Link para Mac: space backed by the headset's runtime (spatial anchor / scene entity).
+    // MacXR Bridge: space backed by the headset's runtime (spatial anchor / scene entity).
     Space* CreateRemoteSpace(uint64_t remoteId);
     XrResult GetStageBounds(XrExtent2Df* bounds);
     bool HasTrackingConnection() const;
     // hand: 0 = left, 1 = right. Amplitude 0 stops the hand's vibration.
     void SendHaptics(uint8_t hand, float amplitude, float durationMs, float frequency);
 
-    // Link para Mac (XR_FB_passthrough): what the app wants the headset to show under its frame.
+    // MacXR Bridge (XR_FB_passthrough): what the app wants the headset to show under its frame.
     // Called from EndFrame (per frame) and from xrPassthroughLayerSetStyleFB; relayed to the client
     // only when something changed (plus a 1 Hz refresh so a late client catches up).
     void UpdateAppPassthrough(bool appUsesPassthrough, bool visible, float opacity, const XrColor4f& edgeColor);
 
-    // Link para Mac: refresh rate the stream runs at (negotiated with the headset), for XR_FB_display_refresh_rate.
+    // MacXR Bridge: refresh rate the stream runs at (negotiated with the headset), for XR_FB_display_refresh_rate.
     uint32_t GetDisplayRefreshRateHz();
 
     // Input manager access

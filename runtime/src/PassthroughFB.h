@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-// Link para Mac: XR_FB_passthrough objects. The headset client owns the real passthrough layer;
+// MacXR Bridge: XR_FB_passthrough objects. The headset client owns the real passthrough layer;
 // the runtime only tracks the app's intent (running/paused, opacity, edge color) and relays it.
 #pragma once
 

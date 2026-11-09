@@ -132,7 +132,7 @@ XrResult HandTracker::LocateHandJoints(XrSpace baseSpace, XrTime /*time*/,
     return XR_SUCCESS;
 }
 
-// Link para Mac: fill the Meta (FB) structs that OVRPlugin chains to xrLocateHandJointsEXT.
+// MacXR Bridge: fill the Meta (FB) structs that OVRPlugin chains to xrLocateHandJointsEXT.
 // - XrHandTrackingScaleFB (from XR_FB_hand_tracking_mesh): hand scale 1.0 (ISDK needs > 0).
 // - XrHandTrackingAimStateFB (XR_FB_hand_tracking_aim): pinch strengths from thumb-to-fingertip distance
 //   and an aim pose that points from the shoulder through the palm (Meta's "pointer pose").

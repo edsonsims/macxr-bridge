@@ -1501,7 +1501,7 @@ XrResult Session::GetStageBounds(XrExtent2Df* bounds)
     }
     if (!available)
     {
-        // Link para Mac: Unity's OpenXR plugin + OVRPlugin recreate the app space every frame while STAGE bounds
+        // MacXR Bridge: Unity's OpenXR plugin + OVRPlugin recreate the app space every frame while STAGE bounds
         // are "unavailable" (and then submit the previous, destroyed space to xrEndFrame). Until the headset
         // reports its guardian, answer with a default 3 m x 3 m play area like a freshly set-up headset does.
         bounds->width = 3.0f;

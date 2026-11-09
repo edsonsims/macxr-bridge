@@ -12,12 +12,12 @@
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM" />
     <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
-    <!-- Link para Mac: spatial anchors and Scene data are proxied to the macOS runtime -->
+    <!-- MacXR Bridge: spatial anchors and Scene data are proxied to the macOS runtime -->
     <uses-permission android:name="com.oculus.permission.USE_ANCHOR_API" />
     <uses-permission android:name="com.oculus.permission.USE_SCENE" />
-    <!-- Link para Mac: passthrough camera relay (PCA) -->
+    <!-- MacXR Bridge: passthrough camera relay (PCA) -->
     <uses-permission android:name="horizonos.permission.HEADSET_CAMERA" />
-    <!-- Link para Mac: the headset microphone is forwarded to the Mac -->
+    <!-- MacXR Bridge: the headset microphone is forwarded to the Mac -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!-- OpenGL ES 3.1 required for Quest -->
@@ -55,7 +55,7 @@
         <meta-data
             android:name="com.oculus.supportedDevices"
             android:value="all" />
-        <!-- Link para Mac: same hand tracking setup as a Meta XR app (microgestures need hand tracking v2). -->
+        <!-- MacXR Bridge: same hand tracking setup as a Meta XR app (microgestures need hand tracking v2). -->
         <meta-data
             android:name="com.oculus.handtracking.frequency"
             android:value="HIGH" />

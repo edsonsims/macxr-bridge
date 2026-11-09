@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: client side of the camera channel. Receives JPEG frames from HeadsetCamera (JNI)
+// MacXR Bridge: client side of the camera channel. Receives JPEG frames from HeadsetCamera (JNI)
 // and forwards them to the macOS runtime over port 9949 with the head pose at send time.
 
 #pragma once

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: runtime side of the camera channel. Receives JPEG frames from the headset,
+// MacXR Bridge: runtime side of the camera channel. Receives JPEG frames from the headset,
 // decodes them to RGBA, and keeps the latest one (with world-space camera pose and intrinsics)
 // for Unity to read through the C export (oxrsys_camera_*).
 
@@ -51,7 +51,7 @@ public:
     // Headset state sent by the client about once a second (developer HUD). False before the first one.
     bool GetClientStats(oxr::protocol::camera::ClientStats& stats, float& ageSeconds) const;
 
-    // Session replay (Unity's LinkSession): recorded depth replaces the headset's, so the runtime's environment
+    // Session replay (Unity's BridgeSession): recorded depth replaces the headset's, so the runtime's environment
     // raycast (XR_META_environment_raycast) answers from the recording. While on, live depth is ignored.
     void SetDepthReplay(bool on);
     void InjectDepth(const oxr::protocol::camera::DepthInfo& info, const uint16_t* pixels, uint32_t count);

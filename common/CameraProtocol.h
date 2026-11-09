@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: wire format of the "camera" channel (TcpRecordType::Camera, port 9949).
+// MacXR Bridge: wire format of the "camera" channel (TcpRecordType::Camera, port 9949).
 //
 // The headset client captures a passthrough camera with Android Camera2, JPEG-encodes each frame
 // and sends it with the camera's intrinsics, its extrinsics relative to the head, and the head
@@ -111,7 +111,7 @@ struct AudioHeader
     uint64_t sequence;      // increases by one per message (gaps = drops)
 };
 
-// Headset state for the developer HUD (Link para Mac). Fields are appended only; size tells how many are present.
+// Headset state for the developer HUD (MacXR Bridge). Fields are appended only; size tells how many are present.
 struct ClientStats
 {
     uint32_t size;               // sizeof(ClientStats) on the sender
@@ -126,7 +126,7 @@ struct ClientStats
 };
 static_assert(sizeof(ClientStats) == 56, "ClientStats layout is shared with C#");
 
-// Headset microphone forwarded by the runtime to the "Quest 3 Microphone" audio driver (UDP on localhost).
+// Headset microphone forwarded by the runtime to the "Headset Microphone" audio driver (UDP on localhost).
 constexpr uint16_t MIC_DRIVER_PORT = 9950;
 constexpr uint32_t MIC_DRIVER_MAGIC = 0x4d51584f; // "OXQM"
 struct MicDatagram

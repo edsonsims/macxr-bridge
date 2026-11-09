@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Link para Mac: XR_FB_spatial_entity (+ storage, query, container), XR_META_spatial_entity_persistence
+// MacXR Bridge: XR_FB_spatial_entity (+ storage, query, container), XR_META_spatial_entity_persistence
 // and _discovery, XR_FB_scene, XR_FB_scene_capture and XR_META_spatial_entity_mesh, implemented by
 // proxying every call to the headset's OpenXR runtime through SpatialProxy.
 

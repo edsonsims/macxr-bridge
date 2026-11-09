@@ -66,7 +66,7 @@ void CameraRelay::SetConnected(bool connected)
     if (!connected)
     {
         info_.valid = 0;
-        depthInfo_.valid = 0;
+        if (!depthReplay_.load()) depthInfo_.valid = 0; // a replayed session keeps its depth
     }
     spdlog::info("CameraRelay: camera channel {}", connected ? "connected" : "disconnected");
 }
@@ -374,12 +374,16 @@ bool CameraRelay::GetDepthSnapshot(DepthInfo& info, std::shared_ptr<const std::v
                                    int64_t& ageNs) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!depthInfo_.valid || !depth_ || !connected_) return false;
+    // A replayed session's depth is current by definition: it must not expire while the replay waits (paused,
+    // lockstep tests waiting on inference) or when the live headset's camera channel reconnects (Wi-Fi). Otherwise
+    // ray casts fall back to the app's own raycast and session tests stop being deterministic.
+    const bool replay = depthReplay_.load();
+    if (!depthInfo_.valid || !depth_ || (!connected_ && !replay)) return false;
     info = depthInfo_;
     pixels = depth_;
     const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
-    ageNs = now - depthReceivedNs_;
+    ageNs = replay ? 0 : now - depthReceivedNs_;
     return true;
 }
 

@@ -18,7 +18,7 @@ constexpr uint16_t TRACKING_PORT = 9945;
 constexpr uint16_t CONTROL_PORT = 9946;
 constexpr uint16_t AUDIO_PORT = 9947;
 constexpr uint16_t SPATIAL_PORT = 9948;
-constexpr uint16_t CAMERA_PORT = 9949; // Link para Mac: passthrough camera relay (PCA)
+constexpr uint16_t CAMERA_PORT = 9949; // MacXR Bridge: passthrough camera relay (PCA)
 constexpr uint32_t HAND_JOINT_COUNT = 26;
 constexpr uint32_t STREAMING_MIN_BITRATE_MBPS = 1;
 constexpr uint32_t STREAMING_MAX_BITRATE_MBPS = 200;
@@ -369,7 +369,7 @@ struct TrackingPacket
     // Valid only with a known controllerProfile.
     uint32_t touchState;
 
-    // Link para Mac: per-joint hand orientations (OpenXR XR_EXT_hand_tracking convention), quaternion
+    // MacXR Bridge: per-joint hand orientations (OpenXR XR_EXT_hand_tracking convention), quaternion
     // x, y, z, w quantized to int16 (value * 32767). Without them every joint shared one orientation and
     // skinned hands (Meta Interaction SDK, OVRHand) rendered with twisted fingers. Appended last so older
     // clients stay compatible; valid only with TRACKING_FLAG_HAND_JOINT_ROTATIONS_VALID.
@@ -414,7 +414,7 @@ enum ButtonFlags : uint32_t
     BUTTON_FRAME_RIGHT_MENU = 0x80000,
     BUTTON_LEFT_BUMPER = 0x100000,
     BUTTON_RIGHT_BUMPER = 0x200000,
-    // Link para Mac: XR_META_hand_tracking_microgestures (thumb swipes/tap on the index). The client sets a bit for
+    // MacXR Bridge: XR_META_hand_tracking_microgestures (thumb swipes/tap on the index). The client sets a bit for
     // ~120 ms per recognized gesture, so the runtime's boolean reads true for a few frames: one press per gesture.
     BUTTON_LEFT_MICRO_SWIPE_LEFT = 1u << 22,
     BUTTON_LEFT_MICRO_SWIPE_RIGHT = 1u << 23,
@@ -461,7 +461,7 @@ enum class ControlType : uint8_t
     NackRequest = 0x85,        // Client → Server: retransmit specific packets
     StreamConfigUpdate = 0x86, // Server → Client: live encoded stream dimensions changed
     StreamConfigAck = 0x87,    // Client → Server: decoder accepted/rejected the update
-    PassthroughStyle = 0x88,   // Server → Client: the app's XR_FB_passthrough state (Link para Mac)
+    PassthroughStyle = 0x88,   // Server → Client: the app's XR_FB_passthrough state (MacXR Bridge)
 };
 
 enum StreamConfigUpdateFlags : uint32_t
@@ -508,7 +508,7 @@ struct RequestKeyframe
     uint32_t detail = 0;       // Dropped frame count or stall age in ms
 };
 
-// Link para Mac: the OpenXR app's passthrough intent, relayed from the runtime's XR_FB_passthrough
+// MacXR Bridge: the OpenXR app's passthrough intent, relayed from the runtime's XR_FB_passthrough
 // implementation to the headset, which owns the real passthrough layer. `enabled` = the app submitted a
 // running passthrough layer this frame; opacity/edge color come from xrPassthroughLayerSetStyleFB.
 struct PassthroughStyleCommand
