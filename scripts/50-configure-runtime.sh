@@ -32,8 +32,8 @@ set_key() {
 # Values tuned for MR development on Quest 3 over USB.
 set_key transport '"auto"'                       # USB (adb reverse) first, Wi-Fi as fallback
 set_key video_codec '"h265"'
-set_key bitrate_mbps "${LPM_BITRATE_MBPS:-80}"   # over USB the client doesn't cap it; 80 Mbps is comfortable
-set_key refresh_rate_hz "${LPM_REFRESH_HZ:-72}"
+set_key bitrate_mbps "${MXB_BITRATE_MBPS:-80}"   # over USB the client doesn't cap it; 80 Mbps is comfortable
+set_key refresh_rate_hz "${MXB_REFRESH_HZ:-72}"
 set_key passthrough_enabled true                 # the client keeps the Quest passthrough on
 set_key app_alpha_blend_passthrough true         # the app can use a transparent background (real alpha below the eyes)
 set_key client_reprojection '"pose"'

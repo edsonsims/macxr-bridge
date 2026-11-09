@@ -1,6 +1,6 @@
 # unity-tools
 
-Link para Mac Unity scripts. Copy them into the project's `Assets/LinkParaMac/`.
+MacXR Bridge Unity scripts. Copy them into the project's `Assets/MacXRBridge/`.
 
 - `RoomJsonExporter.cs` — on the headset, saves the real MRUK room to `room.json` (persistentDataPath).
   Pull it with `scripts/70-pull-room-json.sh <package name>` and, in the Editor, set up the MRUK component:

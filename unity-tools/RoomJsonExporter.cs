@@ -1,4 +1,4 @@
-// Link para Mac — exports the real room (MRUK) to JSON on the headset.
+// MacXR Bridge — exports the real room (MRUK) to JSON on the headset.
 // Put this component on any GameObject in the scene that has MRUK, build for the Quest,
 // open the app once and then run scripts/70-pull-room-json.sh <package name>.
 // On the Mac, MRUK loads that JSON in the Editor (Data Source = Device With Json Fallback).
@@ -6,7 +6,7 @@ using System.IO;
 using UnityEngine;
 using Meta.XR.MRUtilityKit;
 
-namespace LinkParaMac
+namespace MacXRBridge
 {
     public class RoomJsonExporter : MonoBehaviour
     {
@@ -24,7 +24,7 @@ namespace LinkParaMac
             if (!exportOnSceneLoaded) return;
             if (MRUK.Instance == null)
             {
-                Debug.LogWarning("[LinkParaMac] MRUK not found in the scene.");
+                Debug.LogWarning("[MacXRBridge] MRUK not found in the scene.");
                 return;
             }
             MRUK.Instance.RegisterSceneLoadedCallback(Export);
@@ -35,7 +35,7 @@ namespace LinkParaMac
         {
             if (MRUK.Instance == null)
             {
-                Debug.LogWarning("[LinkParaMac] MRUK not found in the scene.");
+                Debug.LogWarning("[MacXRBridge] MRUK not found in the scene.");
                 return;
             }
 
@@ -43,7 +43,7 @@ namespace LinkParaMac
                 SerializationHelpers.CoordinateSystem.Unity, includeGlobalMesh);
             string path = Path.Combine(Application.persistentDataPath, fileName);
             File.WriteAllText(path, json);
-            Debug.Log($"[LinkParaMac] Room exported to {path} ({json.Length} characters). " +
+            Debug.Log($"[MacXRBridge] Room exported to {path} ({json.Length} characters). " +
                       "On the Mac: scripts/70-pull-room-json.sh <package name>");
         }
     }

@@ -1,10 +1,10 @@
 #!/bin/zsh
-# Link para Mac — variables and functions shared by the scripts.
+# MacXR Bridge — variables and functions shared by the scripts.
 # This file is loaded with `source`; do not run it directly.
 
-LPM_SCRIPTS_DIR="$(cd "$(dirname "${(%):-%x}")" && pwd)"
-LPM_ROOT="$(cd "${LPM_SCRIPTS_DIR}/.." && pwd)"
-OXR_DIR="${LPM_ROOT}/oxrsys"
+MXB_SCRIPTS_DIR="$(cd "$(dirname "${(%):-%x}")" && pwd)"
+MXB_ROOT="$(cd "${MXB_SCRIPTS_DIR}/.." && pwd)"
+OXR_DIR="${MXB_ROOT}/oxrsys"
 OXR_PRESET="${OXR_PRESET:-macos-arm64}"
 OXR_BUILD_DIR="${OXR_DIR}/build/${OXR_PRESET}"
 OXR_MANIFEST="${OXR_BUILD_DIR}/runtime/oxrsys-runtime.json"
@@ -17,7 +17,7 @@ OXR_CONFIG_DIR="${HOME}/Library/Application Support/OXRSys"
 OXR_TOML="${OXR_CONFIG_DIR}/oxrsys-runtime.toml"
 
 # USB transport ports (adb reverse). 9948 is the "spatial" channel, still reserved.
-LPM_PORTS=(9944 9945 9946 9948 9949)
+MXB_PORTS=(9944 9945 9946 9948 9949)
 
 autoload -U colors && colors
 ok()   { print -P "%F{green}✔%f $*"; }

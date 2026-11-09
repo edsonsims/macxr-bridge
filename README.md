@@ -1,11 +1,15 @@
-# Link para Mac
+# MacXR Bridge
 
-A "Meta Quest Link" for macOS: press Play in Unity on the Mac and the app shows up on the Quest 3 with
+A Quest Link-style workflow for macOS: press Play in Unity on the Mac and the app shows up on the Quest 3 with
 real head tracking, hands and passthrough. A fork of [OXRSys](https://github.com/demonixis/oxrsys)
 (a native OpenXR runtime for macOS, MPL-2.0) with what's missing for mixed reality development
-with the Meta XR SDK. Working name: "Link" is a Meta trademark; pick a neutral name before publishing.
+with the Meta XR SDK.
 
-Research, decisions and backlog: [`../docs/link-para-mac.md`](../docs/link-para-mac.md).
+> MacXR Bridge is an independent project. It is not affiliated with, sponsored or endorsed by Meta Platforms, Inc.
+> Meta, Meta Quest, Quest Link and Air Link are trademarks of Meta Platforms, Inc., used here only to describe compatibility.
+> Built on [OXRSys](https://github.com/demonixis/oxrsys) by Yannick Comte and contributors (MPL-2.0).
+
+Research, decisions and backlog: [`../docs/macxr-bridge.md`](../docs/macxr-bridge.md).
 
 ## How it works
 
@@ -14,7 +18,7 @@ Unity Editor (Mac) ──OpenXR──▶ OXRSys runtime ──VideoToolbox HEVC�
                                       ◀────────── head, hands (XR_EXT_hand_tracking), controllers ◀──────────
 ```
 
-- `oxrsys/` — the fork (branch `link-para-mac`; remote `upstream` = original project).
+- `oxrsys/` — the fork (branch `macxr-bridge`; remote `upstream` = original project).
 - `scripts/` — automated Phase 1 walkthrough (below).
 - `unity-tools/` — Unity scripts: export the real room from the headset to use in the Editor.
 
@@ -25,7 +29,7 @@ Java 17, Android SDK (platform 35, NDK 28.2.13676358, cmake 3.22.1, platform-too
 Quest 3 in developer mode, with hand tracking turned on.
 
 ```bash
-cd link-para-mac/scripts
+cd macxr-bridge/scripts
 ./00-check-prereqs.sh       # checks everything and tells you what's missing
 ./all.sh                    # or one at a time:
 ./10-build-runtime.sh       #   runtime (build/macos-arm64/runtime/oxrsys-runtime.json)
@@ -52,7 +56,7 @@ Note: Unity must have been opened *after* `50-configure-runtime.sh` so it inheri
 4. Latency good enough to iterate (move your hand and see the response without motion sickness).
 5. Real room in the Editor: `unity-tools/RoomJsonExporter.cs` in the build → `./70-pull-room-json.sh <package>` → MRUK with Data Source = Device With Json Fallback.
 
-### What does NOT come through the Link yet (use a headset build)
+### What does NOT come through the bridge yet (use a headset build)
 Quest camera (PCA), spatial anchors, MRUK scene/anchors from the headset (use the JSON), microgestures, headset audio.
 
 ## Fork backlog (Phase 2, after Nov 18)

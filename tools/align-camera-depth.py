@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Link para Mac: measures the rotation of the RGB camera (Camera2, id 50) relative to the head by aligning the edges
+# MacXR Bridge: measures the rotation of the RGB camera (Camera2, id 50) relative to the head by aligning the edges
 # of the environment depth (XR_META_environment_depth, which comes in the view pose ≈ head) with the camera image
 # from the same instant. Result in degrees (OpenXR view convention: pitch + = up,
 # yaw + = left, roll + = counterclockwise).
@@ -7,7 +7,7 @@
 # Usage: align-camera-depth.py depth_dump.bin camera.png
 #   depth_dump.bin: the client writes the 5th depth frame of each provider start to
 #     /sdcard/Android/data/net.demonixis.oxrsys.android/files/depth_dump.bin (adb pull)
-#   camera.png: the LinkBridge "camera" command (.link/camera.png), with the headset held still
+#   camera.png: the CommandBridge "camera" command (.macxr/camera.png), with the headset held still
 # Measured on 2026-11-08 (2 depth frames x 2 camera frames, grid search): pitch≈-2 yaw≈-3 roll≈-2 (±1°)
 # → LinkCameraFeed.HeadFromCameraCalibrated. The formula using Camera2's LENS_POSE_ROTATION (-11°) scores much worse.
 import struct, sys

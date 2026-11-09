@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Link para Mac — one-step install: Mac OpenXR runtime, Quest app, Quest microphone, ffmpeg.
+# MacXR Bridge — one-step install: Mac OpenXR runtime, Quest app, Quest microphone, ffmpeg.
 # Requires: Xcode (command line tools), Android SDK/NDK, Homebrew, the Quest on the cable with USB debugging
 # authorized ("Always allow"). macOS asks for the Mac password once (microphone driver).
 set -euo pipefail
@@ -15,4 +15,4 @@ zsh "$here/65-install-mic-driver.sh"
 step "ffmpeg (recordings and spectator)"
 if [[ -x /opt/homebrew/bin/ffmpeg ]]; then ok "ffmpeg present"; else brew install ffmpeg && ok "ffmpeg installed"; fi
 print
-ok "Done. In Unity: Window ▸ Link para Mac ▸ Panel (and Setup & Diagnostics to check everything), then Play with the Quest on the cable."
+ok "Done. In Unity: Window ▸ MacXR Bridge ▸ Panel (and Setup & Diagnostics to check everything), then Play with the Quest on the cable."

@@ -13,8 +13,8 @@ apk="${OXR_APK_RELEASE}"; [[ "${1:-}" == "--debug" ]] && apk="${OXR_APK_DEBUG}"
 "$adb" -s "$serial" install -r "$apk"
 ok "APK installed on ${serial}"
 
-for p in "${LPM_PORTS[@]}"; do "$adb" -s "$serial" reverse "tcp:${p}" "tcp:${p}"; done
-ok "adb reverse set up on ports ${LPM_PORTS[*]}"
+for p in "${MXB_PORTS[@]}"; do "$adb" -s "$serial" reverse "tcp:${p}" "tcp:${p}"; done
+ok "adb reverse set up on ports ${MXB_PORTS[*]}"
 "$adb" -s "$serial" reverse --list | sed 's/^/   /'
 
 pkg="$("$adb" -s "$serial" shell pm list packages 2>/dev/null | grep -F "net.demonixis.oxrsys.android" | head -1 | sed 's/package://')"

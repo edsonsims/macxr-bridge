@@ -1,15 +1,15 @@
 #!/bin/zsh -l
-# Link para Mac — task runner.
+# MacXR Bridge — task runner.
 # Keeps running in this Terminal window and runs, in order, the .sh files dropped into
-# link-para-mac/.runner/queue/. Each task's output goes to link-para-mac/logs/<name>.log.
-# To stop: close this window, press Ctrl-C, or create the file link-para-mac/.runner/STOP.
+# macxr-bridge/.runner/queue/. Each task's output goes to macxr-bridge/logs/<name>.log.
+# To stop: close this window, press Ctrl-C, or create the file macxr-bridge/.runner/STOP.
 set -u
 SCRIPT_DIR="${0:A:h}"
 ROOT="${SCRIPT_DIR:h}"
 RUN="$ROOT/.runner"
 mkdir -p "$RUN/queue" "$RUN/running" "$RUN/done" "$ROOT/logs"
 rm -f "$RUN/STOP"
-print "Link para Mac — runner started at $(date)"
+print "MacXR Bridge — runner started at $(date)"
 print "Queue: $RUN/queue    Logs: $ROOT/logs"
 print "To stop: close the window, press Ctrl-C, or create $RUN/STOP"
 print "runner-ready $(date +%s) pid=$$" > "$RUN/STATUS"

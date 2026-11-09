@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(dirname "${(%):-%x}")/common.sh"
 
 pkg="${1:-}"; [[ -n "$pkg" ]] || { fail "Usage: $0 <Unity app package name> [dest.json]"; exit 1; }
-dest="${2:-${LPM_ROOT}/unity-tools/room.json}"
+dest="${2:-${MXB_ROOT}/unity-tools/room.json}"
 adb="$(adb_bin)" || { fail "adb not found"; exit 1; }
 serial="$(quest_serial)" || { fail "no authorized headset on adb"; exit 1; }
 src="/sdcard/Android/data/${pkg}/files/room.json"

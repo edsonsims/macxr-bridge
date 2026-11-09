@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Checks what the Mac needs to build Link para Mac (runtime, Home and Quest client)
+# Checks what the Mac needs to build MacXR Bridge (runtime, Home and Quest client)
 # and to run Unity with the Meta XR SDK. Read-only; installs nothing.
 set -uo pipefail
 source "$(dirname "${(%):-%x}")/common.sh"

@@ -8,7 +8,7 @@ source "$(dirname "${(%):-%x}")/common.sh"
 adb="$(adb_bin)" || { fail "adb not found"; exit 1; }
 caffeinate -u -t 2
 osascript -e 'tell application id "com.unity3d.UnityEditor5.x" to activate' >/dev/null 2>&1
-for p in "${LPM_PORTS[@]}"; do "$adb" reverse "tcp:${p}" "tcp:${p}" >/dev/null 2>&1; done
+for p in "${MXB_PORTS[@]}"; do "$adb" reverse "tcp:${p}" "tcp:${p}" >/dev/null 2>&1; done
 "$adb" shell am force-stop net.demonixis.oxrsys.android
 sleep 5
 "$adb" shell am start -n net.demonixis.oxrsys.android/com.oculus.NativeActivity >/dev/null
