@@ -23,10 +23,12 @@ namespace MacXRBridge.EditorTools
     public class BridgeSpectatorWindow : EditorWindow
     {
         [MenuItem("Window/MacXR Bridge/Spectator (Mixed Reality)")]
-        public static void Open() => GetWindow<BridgeSpectatorWindow>("MacXR: Spectator");
+        public static void Open() => GetWindow<BridgeSpectatorWindow>("MacXR Spectator");
 
         void OnEnable()
         {
+            titleContent = new GUIContent("MacXR Spectator"); // windows restored from an older layout keep their old title otherwise
+            minSize = new Vector2(240, 200);
             BridgeComposite.AddUser();
             BridgeComposite.Composited += OnFrame;
         }
@@ -41,27 +43,32 @@ namespace MacXRBridge.EditorTools
 
         void OnGUI()
         {
+            bool playing = EditorApplication.isPlaying;
             using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
+            using (new EditorGUI.DisabledScope(!playing && !BridgeStream.Running))
             {
                 if (BridgeStream.Running)
                 {
                     GUILayout.Label("On the network: " + BridgeStream.Url + $"  ({BridgeStream.Clients} watching)", EditorStyles.miniLabel);
                     if (GUILayout.Button("Stop stream", EditorStyles.toolbarButton, GUILayout.Width(90))) BridgeStream.Stop();
                 }
-                else if (GUILayout.Button("Stream on local network", EditorStyles.toolbarButton, GUILayout.Width(150))) BridgeStream.Start(BridgeStream.DefaultPort);
+                else if (GUILayout.Button("Stream to the network", EditorStyles.toolbarButton, GUILayout.ExpandWidth(false))) BridgeStream.Start(BridgeStream.DefaultPort);
                 GUILayout.FlexibleSpace();
                 if (!BridgeRecorder.Recording && GUILayout.Button("Record", EditorStyles.toolbarButton, GUILayout.Width(60))) BridgeRecorder.Start("");
                 if (BridgeRecorder.Recording && GUILayout.Button($"Stop ({BridgeRecorder.Seconds:F0}s)", EditorStyles.toolbarButton, GUILayout.Width(90))) BridgeRecorder.Stop();
             }
             var rt = BridgeComposite.Output;
-            Rect area = new Rect(0, EditorGUIUtility.singleLineHeight + 2, position.width, position.height - EditorGUIUtility.singleLineHeight - 2);
+            float top = EditorStyles.toolbar.fixedHeight > 0 ? EditorStyles.toolbar.fixedHeight : EditorGUIUtility.singleLineHeight + 2;
+            Rect area = new Rect(0, top, position.width, position.height - top);
             if (!EditorApplication.isPlaying || rt == null)
             {
                 EditorGUI.DrawRect(area, Color.black);
-                GUI.Label(new Rect(area.x + 10, area.y + 10, area.width - 20, 40),
-                    EditorApplication.isPlaying ? "Waiting for the Quest camera…" : "Enter Play Mode with the Quest connected.", EditorStyles.whiteLabel);
+                var hint = new GUIStyle(EditorStyles.whiteLabel) { wordWrap = true };
+                GUI.Label(new Rect(area.x + 10, area.y + 10, area.width - 20, 60),
+                    playing ? "Waiting for the Quest camera…" : "Mixed reality view (headset camera + app). Enter Play Mode with the Quest connected.", hint);
                 return;
             }
+            EditorGUI.DrawRect(area, Color.black); // letterbox
             GUI.DrawTexture(area, rt, ScaleMode.ScaleToFit, false);
         }
     }

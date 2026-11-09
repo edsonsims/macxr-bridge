@@ -46,7 +46,7 @@ namespace MacXRBridge.EditorTools
     public class BridgeSetupWindow : EditorWindow
     {
         [MenuItem("Window/MacXR Bridge/Setup & Diagnostics", priority = 1)]
-        public static void Open() => GetWindow<BridgeSetupWindow>("MacXR: Setup");
+        public static void Open() => GetWindow<BridgeSetupWindow>("MacXR Setup");
 
         static string Root => BridgePanel.BridgeRoot;
         public static string RuntimeJson => Path.Combine(Root, "oxrsys", "build", "macos-arm64", "runtime", "oxrsys-runtime.json");
@@ -76,14 +76,26 @@ namespace MacXRBridge.EditorTools
                 string output;
                 try
                 {
+                    // Start the adb server first WITHOUT redirected output: a server started by a redirected command inherits
+                    // the pipes, so reading the output never ends and the check stayed at "(checking…)" forever.
+                    var server = Process.Start(new ProcessStartInfo(adb, "start-server") { UseShellExecute = false, CreateNoWindow = true });
+                    server.WaitForExit(20000);
                     var p = Process.Start(new ProcessStartInfo(adb, args) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true });
-                    output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
-                    if (!p.WaitForExit(120000)) { try { p.Kill(); } catch { } output += " (timed out)"; }
+                    var stdout = p.StandardOutput.ReadToEndAsync();
+                    var stderr = p.StandardError.ReadToEndAsync();
+                    bool exited = p.WaitForExit(120000);
+                    if (!exited) { try { p.Kill(); } catch { } }
+                    output = (stdout.Wait(2000) ? stdout.Result : "") + (stderr.Wait(2000) ? stderr.Result : "") + (exited ? "" : " (timed out)");
                 }
                 catch (Exception e) { output = e.Message; }
                 _adbBusy = false;
-                EditorApplication.delayCall += () => done(output.Trim());
+                EditorApplication.delayCall += () => { done(output.Trim()); RepaintOpen(); };
             }) { IsBackground = true }.Start();
+        }
+
+        static void RepaintOpen()
+        {
+            foreach (var w in Resources.FindObjectsOfTypeAll<BridgeSetupWindow>()) w.Repaint();
         }
 
         static void CheckQuest()
@@ -117,7 +129,17 @@ namespace MacXRBridge.EditorTools
 
         Vector2 _scroll;
 
-        void OnEnable() { _nextAdbCheck = 0; }
+        void OnEnable()
+        {
+            titleContent = new GUIContent("MacXR Setup"); // windows restored from an older layout keep their old title otherwise
+            minSize = new Vector2(360, 380);
+            _nextAdbCheck = 0;
+        }
+
+        static string Home => Environment.GetEnvironmentVariable("HOME") ?? "";
+        static string Short(string path) => !string.IsNullOrEmpty(Home) && path.StartsWith(Home) ? "~" + path.Substring(Home.Length) : path;
+        static GUIStyle _rowStyle;
+        static GUIStyle RowStyle => _rowStyle ??= new GUIStyle(EditorStyles.label) { richText = true, wordWrap = true };
 
         void Update()
         {
@@ -131,23 +153,22 @@ namespace MacXRBridge.EditorTools
         {
             using (new EditorGUILayout.HorizontalScope())
             {
-                var style = new GUIStyle(EditorStyles.label) { richText = true, wordWrap = true };
-                GUILayout.Label(ok ? "<color=#3c3>✔</color>" : "<color=#e44>✖</color>", style, GUILayout.Width(18));
-                GUILayout.Label($"<b>{title}</b> — {detail}", style);
-                if (button != null && GUILayout.Button(button, GUILayout.Width(170))) action?.Invoke();
+                GUILayout.Label(ok ? "<color=#3c3>✔</color>" : "<color=#e44>✖</color>", RowStyle, GUILayout.Width(18));
+                GUILayout.Label($"<b>{title}</b> — {detail}", RowStyle);
+                if (button != null && GUILayout.Button(button, GUILayout.Width(150))) action?.Invoke();
             }
         }
 
         void OnGUI()
         {
-            _scroll = EditorGUILayout.BeginScrollView(_scroll);
+            _scroll = EditorGUILayout.BeginScrollView(_scroll, false, false, GUIStyle.none, GUI.skin.verticalScrollbar, GUIStyle.none);
             EditorGUILayout.LabelField("MacXR Bridge — setup and diagnostics", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox("Unity Play Mode on Quest 3 from the Mac (like Quest Link on Windows), with camera, depth, room, " +
                                     "audio, microphone, microgestures, recording, sessions and spectator view.", MessageType.None);
             using (new EditorGUILayout.HorizontalScope())
             {
-                EditorGUILayout.LabelField("MacXR Bridge folder", GUILayout.Width(150));
-                EditorGUILayout.SelectableLabel(Root, GUILayout.Height(18));
+                EditorGUILayout.LabelField("Folder", GUILayout.Width(50));
+                EditorGUILayout.SelectableLabel(Short(Root), GUILayout.Height(18));
                 if (GUILayout.Button("Choose…", GUILayout.Width(90)))
                 {
                     string p = EditorUtility.OpenFolderPanel("macxr-bridge folder", Root, "");
@@ -160,25 +181,26 @@ namespace MacXRBridge.EditorTools
 
             Row(Directory.Exists(Path.Combine(Root, "scripts")), "Folder", Directory.Exists(Path.Combine(Root, "scripts")) ? "found" : "not found — choose the macxr-bridge folder");
             bool runtime = File.Exists(RuntimeDylib) && File.Exists(RuntimeJson);
-            Row(runtime, "Mac OpenXR runtime", runtime ? "built" : "not built", "Build (Terminal)", () => Terminal($"zsh '{Path.Combine(Root, "scripts", "10-build-runtime.sh")}'"));
+            Row(runtime, "Mac OpenXR runtime", runtime ? "built" : "not built", runtime ? "Rebuild (Terminal)" : "Build (Terminal)", () => Terminal($"zsh '{Path.Combine(Root, "scripts", "10-build-runtime.sh")}'"));
             string env = Environment.GetEnvironmentVariable("XR_RUNTIME_JSON") ?? "";
             bool usesRuntime = env == RuntimeJson || (env.Contains("oxrsys") && File.Exists(env));
-            Row(usesRuntime, "This Unity uses the runtime", usesRuntime ? env : "XR_RUNTIME_JSON does not point to MacXR Bridge", "Use in this Unity", () => { BridgeRuntimeEnv.Use(); EditorPrefs.SetBool(BridgeRuntimeEnv.AutoEnvKey, true); });
+            Row(usesRuntime, "This Unity uses the runtime", usesRuntime ? "yes (XR_RUNTIME_JSON)" : "XR_RUNTIME_JSON does not point to MacXR Bridge",
+                usesRuntime ? null : "Use in this Unity", () => { BridgeRuntimeEnv.Use(); EditorPrefs.SetBool(BridgeRuntimeEnv.AutoEnvKey, true); });
             bool xr = XrConfigured(out var xrDetail);
-            Row(xr, "Project", xrDetail, "Configure XR", () => UnityEngine.Debug.Log("[BridgeSetup] " + CommandBridge.ConfigureStandaloneXR()));
+            Row(xr, "Project", xrDetail, xr ? null : "Configure XR", () => UnityEngine.Debug.Log("[BridgeSetup] " + CommandBridge.ConfigureStandaloneXR()));
             bool apk = File.Exists(Apk);
             Row(_adbState.Contains("app installed"), "Quest", _adbState + (_adbAction != "" ? " · " + _adbAction : ""),
-                apk ? "Install app on Quest" : "Build app (Terminal)", () =>
+                !apk ? "Build app (Terminal)" : _adbState.Contains("app installed") ? "Reinstall app" : "Install app", () =>
                 {
                     if (!apk) { Terminal($"zsh '{Path.Combine(Root, "scripts", "30-build-quest-client.sh")}'"); return; }
                     _adbAction = "installing…";
                     RunAdb($"install -r \"{Apk}\"", r => { _adbAction = r.Contains("Success") ? "app installed" : r; RunAdb("shell pm grant net.demonixis.oxrsys.android android.permission.RECORD_AUDIO", _ => { }); CheckQuest(); });
                 });
             bool mic = Microphone.devices.Contains(BridgeMic.DeviceName);
-            Row(mic, "Quest Microphone", mic ? "\"" + BridgeMic.DeviceName + "\" installed" : "device not installed", "Install (asks for password)",
+            Row(mic, "Headset microphone", mic ? "\"" + BridgeMic.DeviceName + "\" installed" : "audio device not installed", mic ? "Reinstall (password)" : "Install (password)",
                 () => Terminal($"zsh '{Path.Combine(Root, "scripts", "65-install-mic-driver.sh")}'"));
             bool ffmpeg = File.Exists(Ffmpeg);
-            Row(ffmpeg, "ffmpeg", ffmpeg ? "present (recordings)" : "missing — video recording will not work", "brew install ffmpeg", () => Terminal("brew install ffmpeg"));
+            Row(ffmpeg, "ffmpeg", ffmpeg ? "present (recordings)" : "missing — video recording will not work", ffmpeg ? null : "brew install ffmpeg", () => Terminal("brew install ffmpeg"));
             EditorGUILayout.Space();
             if (GUILayout.Button("Open the MacXR Bridge panel")) BridgePanel.Open();
             EditorGUILayout.EndScrollView();

@@ -16,7 +16,7 @@ namespace MacXRBridge.EditorTools
         [MenuItem("Window/MacXR Bridge/Panel", priority = 0)]
         public static void Open() => GetWindow<BridgePanel>("MacXR Bridge");
 
-        string _videoName = "demo", _sessionName = "sessao", _lastAction = "";
+        string _videoName = "demo", _sessionName = "session", _lastAction = "";
         int _sessionIndex;
         bool _loop, _debugDepth = true;
         Vector2 _scroll;
@@ -33,7 +33,13 @@ namespace MacXRBridge.EditorTools
             set => EditorPrefs.SetString("MacXRBridge.Root", value);
         }
 
-        void OnEnable() => EditorApplication.update += Poll;
+        void OnEnable()
+        {
+            // Set every time: windows restored from an older layout keep their old serialized title otherwise.
+            titleContent = new GUIContent("MacXR Bridge");
+            minSize = new Vector2(280, 320);
+            EditorApplication.update += Poll;
+        }
         void OnDisable() => EditorApplication.update -= Poll;
 
         void Poll()
@@ -48,6 +54,20 @@ namespace MacXRBridge.EditorTools
 
         void Act(string result) { _lastAction = result ?? ""; }
 
+        // Buttons side by side when they fit the window, stacked when it is narrow (never a horizontal scroll bar).
+        void Buttons(params (string label, Action action)[] buttons)
+        {
+            float need = 0;
+            foreach (var b in buttons) need += GUI.skin.button.CalcSize(new GUIContent(b.label)).x + 4;
+            bool row = need <= position.width - 24;
+            if (row) EditorGUILayout.BeginHorizontal();
+            foreach (var b in buttons)
+                if (GUILayout.Button(b.label)) b.action();
+            if (row) EditorGUILayout.EndHorizontal();
+        }
+
+        static void Wrapped(string text) => EditorGUILayout.LabelField(text, Mono);
+
         public static void RunScript(string script)
         {
             string path = Path.Combine(BridgeRoot, "scripts", script);
@@ -58,56 +78,42 @@ namespace MacXRBridge.EditorTools
 
         void OnGUI()
         {
-            _scroll = EditorGUILayout.BeginScrollView(_scroll);
+            _scroll = EditorGUILayout.BeginScrollView(_scroll, false, false, GUIStyle.none, GUI.skin.verticalScrollbar, GUIStyle.none);
             bool playing = EditorApplication.isPlaying;
 
             EditorGUILayout.LabelField("Status", EditorStyles.boldLabel);
             if (!playing)
             {
                 EditorGUILayout.HelpBox("Enter Play Mode with the Quest connected by cable (or on the same Wi-Fi) and the OXRSys app open on the headset.", MessageType.Info);
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    if (GUILayout.Button("Play")) EditorApplication.EnterPlaymode();
-                    if (GUILayout.Button("Setup & Diagnostics")) BridgeSetupWindow.Open();
-                }
+                Buttons(("Play", EditorApplication.EnterPlaymode), ("Setup & Diagnostics", BridgeSetupWindow.Open));
             }
             else
             {
                 BridgeHud.Refresh();
-                EditorGUILayout.LabelField(BridgeHud.Text, Mono);
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    if (GUILayout.Button("Reconnect the Quest")) { RunScript("80-reconnect-quest.sh"); Act("reconnecting the Quest (a few seconds)…"); }
-                    if (GUILayout.Button(BridgeHud.Visible ? "Headset HUD: on" : "Headset HUD: off")) Act(BridgeHud.Command(BridgeHud.Visible ? "off" : "on"));
-                }
+                Wrapped(BridgeHud.Text);
+                Buttons(("Reconnect the Quest", () => { RunScript("80-reconnect-quest.sh"); Act("reconnecting the Quest (a few seconds)…"); }),
+                        (BridgeHud.Visible ? "Headset HUD: on" : "Headset HUD: off", () => Act(BridgeHud.Command(BridgeHud.Visible ? "off" : "on"))));
             }
 
             EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Quest Microphone", EditorStyles.boldLabel);
-            EditorGUILayout.LabelField(BridgeMic.Status(), Mono);
+            EditorGUILayout.LabelField("Headset microphone", EditorStyles.boldLabel);
+            Wrapped(BridgeMic.Status());
             using (new EditorGUI.DisabledScope(!playing))
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                if (GUILayout.Button("Test (speak into the headset, 3 s)")) Act(BridgeMic.Command("test"));
-                if (GUILayout.Button("Default input = Quest")) Act(BridgeMic.Command("default on"));
-                if (GUILayout.Button("Restore previous")) Act(BridgeMic.Command("default off"));
-            }
+                Buttons(("Test (speak, 3 s)", () => Act(BridgeMic.Command("test"))),
+                        ("Use as Mac input", () => Act(BridgeMic.Command("default on"))),
+                        ("Restore previous input", () => Act(BridgeMic.Command("default off"))));
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Real world", EditorStyles.boldLabel);
             using (new EditorGUI.DisabledScope(!playing))
             {
+                Buttons(("Load the room (MRUK)", () => Act(RoomTestTools.Load(""))), ("Test beep", () => Act(MacXRBridge.BridgeAudioTap.Beep())));
+                bool dbg = BridgeDebugOverlay.Enabled;
                 using (new EditorGUILayout.HorizontalScope())
                 {
-                    if (GUILayout.Button("Load the room (MRUK)")) Act(RoomTestTools.Load(""));
-                    if (GUILayout.Button("Test beep")) Act(MacXRBridge.BridgeAudioTap.Beep());
-                }
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    bool dbg = BridgeDebugOverlay.Enabled;
                     if (GUILayout.Button(dbg ? "Headset debug view: on" : "Headset debug view: off"))
                         Act(BridgeDebugOverlay.Command(dbg ? "off" : _debugDepth ? "depth" : "on"));
-                    bool depth = GUILayout.Toggle(_debugDepth, "with depth points", GUILayout.Width(190));
+                    bool depth = GUILayout.Toggle(_debugDepth, "depth points", GUILayout.ExpandWidth(false));
                     if (depth != _debugDepth) { _debugDepth = depth; if (dbg) Act(BridgeDebugOverlay.Command(depth ? "depth" : "nodepth")); }
                 }
             }
@@ -125,20 +131,17 @@ namespace MacXRBridge.EditorTools
                     }
                     else if (GUILayout.Button($"Stop recording ({BridgeRecorder.Seconds:0} s)")) Act(BridgeRecorder.Stop());
                 }
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    if (GUILayout.Button("Spectator (window)")) BridgeSpectatorWindow.Open();
-                    if (GUILayout.Button(BridgeStream.Running ? "Stop streaming" : "Stream on local network"))
-                        Act(BridgeStream.Running ? BridgeStream.Command("off") : BridgeStream.Start(BridgeStream.DefaultPort));
-                    if (GUILayout.Button("Open folder", GUILayout.Width(90)))
-                    { Directory.CreateDirectory("Recordings"); EditorUtility.RevealInFinder(Path.GetFullPath("Recordings")); }
-                }
+                Buttons(("Spectator window", BridgeSpectatorWindow.Open),
+                        (BridgeStream.Running ? "Stop streaming" : "Stream to the network",
+                            () => Act(BridgeStream.Running ? BridgeStream.Command("off") : BridgeStream.Start(BridgeStream.DefaultPort))),
+                        ("Recordings folder", () => { Directory.CreateDirectory("Recordings"); EditorUtility.RevealInFinder(Path.GetFullPath("Recordings")); }));
                 if (BridgeStream.Running) EditorGUILayout.SelectableLabel(BridgeStream.Url + $"   ({BridgeStream.Clients} watching)", GUILayout.Height(18));
             }
-            EditorGUILayout.LabelField(BridgeRecorder.Status(), Mono);
+            Wrapped(BridgeRecorder.Status());
 
             EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Sessions (record with the headset, replay without it)", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Sessions", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Record with the headset, replay and test without it.", EditorStyles.wordWrappedMiniLabel);
             using (new EditorGUI.DisabledScope(!playing))
             {
                 using (new EditorGUILayout.HorizontalScope())
@@ -156,6 +159,9 @@ namespace MacXRBridge.EditorTools
                     : Array.Empty<string>();
                 if (sessions.Length > 0)
                 {
+                    // While a replay runs (also one started by a command), the list shows that session.
+                    int replaying = BridgeSession.ReplayName != null ? Array.IndexOf(sessions, BridgeSession.ReplayName) : -1;
+                    if (replaying >= 0) _sessionIndex = replaying;
                     _sessionIndex = Mathf.Clamp(_sessionIndex, 0, sessions.Length - 1);
                     using (new EditorGUILayout.HorizontalScope())
                     {
@@ -170,7 +176,7 @@ namespace MacXRBridge.EditorTools
                     if (BridgeSession.Replaying && BridgeSession.Duration > 0)
                     {
                         double t = BridgeSession.CurrentTime;
-                        double nt = EditorGUILayout.Slider((float)t, 0f, (float)BridgeSession.Duration);
+                        double nt = GUILayout.HorizontalSlider((float)t, 0f, (float)BridgeSession.Duration, GUILayout.Height(18));
                         if (Math.Abs(nt - t) > 0.05) BridgeSession.Seek(nt);
                         using (new EditorGUILayout.HorizontalScope())
                         {
@@ -182,18 +188,16 @@ namespace MacXRBridge.EditorTools
                             if (ns != si && ns >= 0) Act(BridgeSession.SetSpeed(Speeds[ns]));
                         }
                         EditorGUILayout.LabelField($"{t:0.00} / {BridgeSession.Duration:0.0} s · frame {BridgeSession.CameraFrameIndex + 1}/{BridgeSession.CameraFrameCount}" +
-                                                   (BridgeSession.TapeActive ? " · recorded tracking (hands, controllers)" : ""), EditorStyles.miniLabel);
+                                                   (BridgeSession.TapeActive ? " · recorded tracking (head, hands, controllers)" : ""), EditorStyles.wordWrappedMiniLabel);
                     }
-                    using (new EditorGUILayout.HorizontalScope())
+                    string selected = sessions[_sessionIndex];
                     using (new EditorGUI.DisabledScope(BridgeSession.Recording || BridgeSessionTests.Running))
-                    {
-                        if (GUILayout.Button("Record expected (baseline)")) Act(BridgeSession.Command("baseline " + sessions[_sessionIndex]));
-                        if (GUILayout.Button("Test this one")) Act(BridgeSession.Command("test " + sessions[_sessionIndex]));
-                        if (GUILayout.Button("Test all")) Act(BridgeSession.Command("test all"));
-                    }
-                    if (BridgeSessionTests.LastReport != "-") EditorGUILayout.LabelField(BridgeSessionTests.LastReport, Mono);
+                        Buttons(("Save as expected", () => Act(BridgeSession.Command("baseline " + selected))),
+                                ("Test this one", () => Act(BridgeSession.Command("test " + selected))),
+                                ("Test all", () => Act(BridgeSession.Command("test all"))));
+                    if (BridgeSessionTests.LastReport != "-") Wrapped(BridgeSessionTests.LastReport);
                 }
-                EditorGUILayout.LabelField(BridgeSession.Status(), Mono);
+                Wrapped(BridgeSession.Status());
             }
 
             if (!string.IsNullOrEmpty(_lastAction))

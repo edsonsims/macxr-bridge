@@ -57,7 +57,7 @@ namespace MacXRBridge.EditorTools
             return Resolve() && _status(out status) != 0;
         }
 
-        public static bool QuestDevicePresent()
+        public static bool HeadsetDevicePresent()
         {
             foreach (var d in Microphone.devices) if (d == DeviceName) return true;
             return false;
@@ -79,17 +79,17 @@ namespace MacXRBridge.EditorTools
         {
             string devices = string.Join(", ", Microphone.devices);
             if (!TryGetStatus(out var s))
-                return $"Mic: no runtime status (outside Play?). Device on the Mac: {(QuestDevicePresent() ? "yes" : "NO — install macxr-bridge/mic-driver")}\n  inputs: {devices}";
+                return $"Headset mic: live status in Play Mode. Audio device on the Mac: {(HeadsetDevicePresent() ? "installed" : "NOT installed (Setup & Diagnostics)")}\n  inputs: {devices}";
             string age = s.lastAgeMs < 0 ? "never" : $"{s.lastAgeMs:F0} ms ago";
             return $"Headset mic: {s.packets} packets, last {age}, level {s.level:F3}, {s.sampleRate} Hz; " +
                    $"driver {(s.driverInstalled != 0 ? "installed" : "NOT installed")}, default input {(s.isDefaultInput != 0 ? "= headset" : "≠ headset")}\n" +
                    $"  test: {_testResult}\n  inputs: {devices}";
         }
 
-        // Records 3 s through Unity's Microphone on the Quest device and measures the level (the same path the app uses).
+        // Records 3 s through Unity's Microphone on the headset device and measures the level (the same path the app uses).
         static string StartTest()
         {
-            if (!QuestDevicePresent()) return "device \"" + DeviceName + "\" not found (install the driver)";
+            if (!HeadsetDevicePresent()) return "device \"" + DeviceName + "\" not found (install the driver)";
             if (_testClip != null) return "test already running";
             _testClip = Microphone.Start(DeviceName, false, 3, 48000);
             _testEnd = EditorApplication.timeSinceStartup + 3.2;
