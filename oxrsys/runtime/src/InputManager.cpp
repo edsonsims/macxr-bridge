@@ -1,0 +1,1522 @@
+// SPDX-License-Identifier: MPL-2.0
+
+#include "InputManager.h"
+#include "Config.h"
+#include "Instance.h"
+#include "TrackingReceiver.h"
+#include "TrackingTape.h"
+#include <glm/gtc/quaternion.hpp>
+#include <algorithm>
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
+#include <cctype>
+#include <cmath>
+#include <initializer_list>
+#include <spdlog/spdlog.h>
+
+// XR_EXT_hand_tracking types are in openxr.h
+
+namespace
+{
+
+constexpr const char* kOculusTouchProfile = "/interaction_profiles/oculus/touch_controller";
+constexpr const char* kTouchPlusPromotedProfile = "/interaction_profiles/meta/touch_plus_controller";
+constexpr const char* kSimpleControllerProfile = "/interaction_profiles/khr/simple_controller";
+constexpr const char* kHandInteractionProfile = "/interaction_profiles/ext/hand_interaction_ext";
+constexpr const char* kValveFrameProfile = "/interaction_profiles/valve/frame_controller_valve";
+
+size_t HandIndex(InputManager::Hand hand)
+{
+    return (hand == InputManager::Hand::Left) ? 0u : 1u;
+}
+
+std::string Lowercase(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
+}
+
+bool ContainsAny(const std::string& value, std::initializer_list<const char*> needles)
+{
+    for (const char* needle : needles)
+    {
+        if (value.find(needle) != std::string::npos)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string DetectStreamingControllerProfile(const std::string& clientName)
+{
+    const std::string lowerName = Lowercase(clientName);
+
+    if (ContainsAny(lowerName, {"pico 3", "pico3", "neo 3", "neo3"}))
+    {
+        return "/interaction_profiles/bytedance/pico_neo3_controller";
+    }
+    if (ContainsAny(lowerName, {"pico 4", "pico4"}))
+    {
+        return "/interaction_profiles/bytedance/pico4_controller";
+    }
+    if (lowerName.find("pico") != std::string::npos)
+    {
+        return "/interaction_profiles/bytedance/pico4_controller";
+    }
+
+    if (ContainsAny(lowerName, {"quest 3", "quest3", "touch plus"}))
+    {
+        return kTouchPlusPromotedProfile;
+    }
+    if (ContainsAny(lowerName, {"quest 2", "quest2"}))
+    {
+        return "/interaction_profiles/meta/touch_controller_quest_2";
+    }
+    if (ContainsAny(lowerName, {"quest 1", "quest1", "rift s"}))
+    {
+        return "/interaction_profiles/meta/touch_controller_quest_1_rift_s";
+    }
+    if (ContainsAny(lowerName, {"quest", "oculus", "meta"}))
+    {
+        return kOculusTouchProfile;
+    }
+
+    return kOculusTouchProfile;
+}
+
+void AddProfileIfMissing(std::vector<std::string>& profiles, const std::string& profile)
+{
+    if (profile.empty())
+    {
+        return;
+    }
+    if (std::find(profiles.begin(), profiles.end(), profile) == profiles.end())
+    {
+        profiles.push_back(profile);
+    }
+}
+
+bool IsHandInteractionProfile(const std::string& profilePath)
+{
+    return profilePath == kHandInteractionProfile;
+}
+
+bool IsHandInteractionComponent(const std::string& componentPath)
+{
+    return componentPath == "pinch_ext/pose" ||
+           componentPath == "pinch_ext/value" ||
+           componentPath == "pinch_ext/ready_ext" ||
+           componentPath == "poke_ext/pose" ||
+           componentPath == "grasp_ext/ready_ext" ||
+           componentPath == "grasp_ext/value" ||
+           componentPath == "aim_activate_ext/ready_ext" ||
+           componentPath == "aim_activate_ext/value" ||
+           componentPath == "grip_surface/pose" ||
+           componentPath.ends_with("_meta/click"); // XR_META_hand_tracking_microgestures
+}
+
+// MacXR Bridge: XR_META_hand_tracking_microgestures components -> the client's button bits (0 if not one).
+uint32_t MicrogestureBit(InputManager::Hand hand, const std::string& componentPath)
+{
+    using namespace oxr::protocol;
+    const bool left = hand == InputManager::Hand::Left;
+    if (componentPath == "swipe_left_meta/click") return left ? BUTTON_LEFT_MICRO_SWIPE_LEFT : BUTTON_RIGHT_MICRO_SWIPE_LEFT;
+    if (componentPath == "swipe_right_meta/click") return left ? BUTTON_LEFT_MICRO_SWIPE_RIGHT : BUTTON_RIGHT_MICRO_SWIPE_RIGHT;
+    if (componentPath == "swipe_forward_meta/click") return left ? BUTTON_LEFT_MICRO_SWIPE_FORWARD : BUTTON_RIGHT_MICRO_SWIPE_FORWARD;
+    if (componentPath == "swipe_backward_meta/click") return left ? BUTTON_LEFT_MICRO_SWIPE_BACKWARD : BUTTON_RIGHT_MICRO_SWIPE_BACKWARD;
+    if (componentPath == "tap_thumb_meta/click") return left ? BUTTON_LEFT_MICRO_TAP_THUMB : BUTTON_RIGHT_MICRO_TAP_THUMB;
+    return 0;
+}
+
+glm::vec3 JointVec3(const InputManager::StreamingHandState& handState, size_t index)
+{
+    const glm::vec4& joint = handState.joints[index];
+    return {joint.x, joint.y, joint.z};
+}
+
+glm::quat BuildTrackedHandOrientation(InputManager::Hand hand,
+                                      const InputManager::StreamingHandState& handState)
+{
+    glm::vec3 palm = JointVec3(handState, XR_HAND_JOINT_PALM_EXT);
+    glm::vec3 wrist = JointVec3(handState, XR_HAND_JOINT_WRIST_EXT);
+    glm::vec3 indexBase = JointVec3(handState, XR_HAND_JOINT_INDEX_METACARPAL_EXT);
+    glm::vec3 littleBase = JointVec3(handState, XR_HAND_JOINT_LITTLE_METACARPAL_EXT);
+
+    glm::vec3 up = palm - wrist;
+    if (glm::dot(up, up) < 1e-6f)
+    {
+        up = glm::vec3(0.0f, 1.0f, 0.0f);
+    }
+    up = glm::normalize(up);
+
+    glm::vec3 across = indexBase - littleBase;
+    if (glm::dot(across, across) < 1e-6f)
+    {
+        across = glm::vec3(1.0f, 0.0f, 0.0f);
+    }
+    across = glm::normalize(across);
+    if (hand == InputManager::Hand::Left)
+    {
+        across = -across;
+    }
+
+    glm::vec3 forward = glm::cross(across, up);
+    if (glm::dot(forward, forward) < 1e-6f)
+    {
+        forward = glm::vec3(0.0f, 0.0f, -1.0f);
+    }
+    forward = glm::normalize(forward);
+    across = glm::normalize(glm::cross(up, forward));
+
+    glm::mat3 basis(across, up, forward);
+    return glm::normalize(glm::quat_cast(basis));
+}
+
+XrPosef MakePose(const glm::vec3& position, const glm::quat& orientation)
+{
+    XrPosef pose{};
+    pose.position = {position.x, position.y, position.z};
+    pose.orientation = {orientation.x, orientation.y, orientation.z, orientation.w};
+    return pose;
+}
+
+bool IsUnsetAimPose(const glm::vec3& pos, const glm::quat& rot)
+{
+    const bool zeroRotation =
+        rot.x == 0.0f && rot.y == 0.0f && rot.z == 0.0f && rot.w == 0.0f;
+    const bool identityAtOrigin =
+        rot.x == 0.0f && rot.y == 0.0f && rot.z == 0.0f && rot.w == 1.0f &&
+        pos.x == 0.0f && pos.y == 0.0f && pos.z == 0.0f;
+    return zeroRotation || identityAtOrigin;
+}
+
+XrSpaceVelocity ReadTrackedVelocity(bool linearValid, bool angularValid,
+                                    const float* linear, const float* angular)
+{
+    XrSpaceVelocity velocity = {XR_TYPE_SPACE_VELOCITY};
+    if (linearValid && std::isfinite(linear[0]) && std::isfinite(linear[1]) && std::isfinite(linear[2]))
+    {
+        velocity.velocityFlags |= XR_SPACE_VELOCITY_LINEAR_VALID_BIT;
+        velocity.linearVelocity = {linear[0], linear[1], linear[2]};
+    }
+    if (angularValid && std::isfinite(angular[0]) && std::isfinite(angular[1]) && std::isfinite(angular[2]))
+    {
+        velocity.velocityFlags |= XR_SPACE_VELOCITY_ANGULAR_VALID_BIT;
+        velocity.angularVelocity = {angular[0], angular[1], angular[2]};
+    }
+    return velocity;
+}
+
+} // namespace
+
+namespace
+{
+std::atomic<InputManager*> gActiveInputManager{nullptr};
+
+// Yaw-only, gravity-aligned orientation: the head forward vector projected onto the horizontal (XZ) plane,
+// keeping only the rotation about world-up (+Y).
+glm::quat YawOnly(const glm::quat& orientation)
+{
+    glm::vec3 forward = orientation * glm::vec3(0.0f, 0.0f, -1.0f);
+    float yaw = std::atan2(-forward.x, -forward.z);
+    if (!std::isfinite(yaw))
+    {
+        yaw = 0.0f;
+    }
+    return glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+}
+} // namespace
+
+InputManager::InputManager()
+    : frameXboxLayout_(std::getenv("OXRSYS_FRAME_XBOX") != nullptr)
+{
+    gActiveInputManager.store(this);
+}
+
+InputManager::~InputManager()
+{
+    InputManager* self = this;
+    gActiveInputManager.compare_exchange_strong(self, nullptr);
+}
+
+InputManager* InputManager::Active()
+{
+    return gActiveInputManager.load();
+}
+
+bool InputManager::GetLocalReference(glm::vec3& position, glm::quat& yaw) const
+{
+    std::lock_guard<std::mutex> lock(localReferenceMutex_);
+    position = localReferencePosition_;
+    yaw = localReferenceYaw_;
+    return localReferenceCaptured_;
+}
+
+void InputManager::SetLocalReference(const glm::vec3& position, const glm::quat& headOrientation)
+{
+    std::lock_guard<std::mutex> lock(localReferenceMutex_);
+    localReferencePosition_ = position;
+    localReferenceYaw_ = YawOnly(headOrientation);
+    localReferenceCaptured_ = true;
+    spdlog::info("InputManager: LOCAL reference set to pos=({:.3f}, {:.3f}, {:.3f})", position.x, position.y,
+                 position.z);
+}
+
+void InputManager::SetTrackingReceiver(TrackingReceiver* receiver)
+{
+    trackingReceiver_ = receiver;
+    if (receiver == nullptr)
+    {
+        streamingControllerActive_.fill(false);
+        for (auto& handState : streamingHands_)
+        {
+            handState.active = false;
+        }
+        streamingClientName_.clear();
+        streamingControllerProfile_.clear();
+        controllerProfile_ = 0;
+        touchState_ = 0;
+    }
+}
+
+void InputManager::SetStreamingClientName(const std::string& clientName)
+{
+    streamingClientName_ = clientName;
+    streamingControllerProfile_ = DetectStreamingControllerProfile(clientName);
+    spdlog::info("InputManager: streaming client='{}' controller_profile='{}'",
+                 streamingClientName_, streamingControllerProfile_);
+}
+
+glm::quat InputManager::GetHeadRotation() const
+{
+    return headQuat_;
+}
+
+void InputManager::Update(float deltaTime)
+{
+    (void)deltaTime;
+    if (trackingReceiver_ != nullptr && trackingReceiver_->IsReceiving())
+    {
+        UpdateFromStreaming();
+    }
+}
+
+void InputManager::UpdateFromStreaming()
+{
+    oxr::protocol::TrackingPacket packet;
+    if (!trackingReceiver_->GetPredictedPose(packet) &&
+        !trackingReceiver_->GetLatestPose(packet))
+    {
+        return;
+    }
+
+    // Apply head pose from headset tracking — store quaternion directly
+    headPosition_ = glm::vec3(packet.headPosition[0],
+                                packet.headPosition[1],
+                                packet.headPosition[2]);
+
+    headQuat_ = glm::quat(packet.headOrientation[3],  // w
+                           packet.headOrientation[0],   // x
+                           packet.headOrientation[1],   // y
+                           packet.headOrientation[2]);  // z
+
+    // Capture the LOCAL reference space anchor from the first valid streamed head
+    // pose. OpenXR LOCAL semantics: origin at the HMD position at session start,
+    // gravity-aligned and yaw-zeroed. Without this the runtime treated LOCAL as the
+    // STAGE (floor) origin, so the view sat ~eye-height too high in LOCAL space and
+    // content authored at LOCAL y=0 appeared on the physical floor.
+    bool captured;
+    {
+        std::lock_guard<std::mutex> lock(localReferenceMutex_);
+        captured = localReferenceCaptured_;
+    }
+    if (!captured)
+    {
+        RecenterLocalReference();
+        {
+            std::lock_guard<std::mutex> lock(localReferenceMutex_);
+            localReferenceCaptured_ = true;
+        }
+        spdlog::info("InputManager: captured LOCAL reference origin pos=({:.3f}, {:.3f}, {:.3f}) "
+                     "(STAGE-relative eye height={:.3f}m)",
+                     localReferencePosition_.x, localReferencePosition_.y,
+                     localReferencePosition_.z, localReferencePosition_.y);
+    }
+
+    const bool leftControllerActive =
+        (packet.trackingFlags & oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE) != 0;
+    const bool rightControllerActive =
+        (packet.trackingFlags & oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE) != 0;
+    const bool previousLeftControllerActive = streamingControllerActive_[HandIndex(Hand::Left)];
+    const bool previousRightControllerActive = streamingControllerActive_[HandIndex(Hand::Right)];
+    streamingControllerActive_[HandIndex(Hand::Left)] = leftControllerActive;
+    streamingControllerActive_[HandIndex(Hand::Right)] = rightControllerActive;
+    if (leftControllerActive != previousLeftControllerActive)
+    {
+        spdlog::info("InputManager: left controller {} flags=0x{:x}",
+                     leftControllerActive ? "active" : "inactive",
+                     packet.trackingFlags);
+    }
+    if (rightControllerActive != previousRightControllerActive)
+    {
+        spdlog::info("InputManager: right controller {} flags=0x{:x}",
+                     rightControllerActive ? "active" : "inactive",
+                     packet.trackingFlags);
+    }
+
+    if (leftControllerActive)
+    {
+        leftControllerPos_ = glm::vec3(packet.leftControllerPos[0],
+                                       packet.leftControllerPos[1],
+                                       packet.leftControllerPos[2]);
+        leftControllerRot_ = glm::quat(packet.leftControllerRot[3],
+                                       packet.leftControllerRot[0],
+                                       packet.leftControllerRot[1],
+                                       packet.leftControllerRot[2]);
+        leftControllerAimPos_ = glm::vec3(packet.leftControllerAimPos[0],
+                                          packet.leftControllerAimPos[1],
+                                          packet.leftControllerAimPos[2]);
+        leftControllerAimRot_ = glm::quat(packet.leftControllerAimRot[3],
+                                          packet.leftControllerAimRot[0],
+                                          packet.leftControllerAimRot[1],
+                                          packet.leftControllerAimRot[2]);
+    }
+    if (rightControllerActive)
+    {
+        rightControllerPos_ = glm::vec3(packet.rightControllerPos[0],
+                                        packet.rightControllerPos[1],
+                                        packet.rightControllerPos[2]);
+        rightControllerRot_ = glm::quat(packet.rightControllerRot[3],
+                                        packet.rightControllerRot[0],
+                                        packet.rightControllerRot[1],
+                                        packet.rightControllerRot[2]);
+        rightControllerAimPos_ = glm::vec3(packet.rightControllerAimPos[0],
+                                           packet.rightControllerAimPos[1],
+                                           packet.rightControllerAimPos[2]);
+        rightControllerAimRot_ = glm::quat(packet.rightControllerAimRot[3],
+                                           packet.rightControllerAimRot[0],
+                                           packet.rightControllerAimRot[1],
+                                           packet.rightControllerAimRot[2]);
+    }
+
+    // Apply button/trigger states
+    uint32_t buttons = packet.buttonState;
+    float leftGrip = packet.leftGrip;
+    float rightGrip = packet.rightGrip;
+    if (frameXboxLayout_)
+    {
+        ApplyFrameXboxLayout(buttons, leftGrip, rightGrip);
+    }
+    buttonState_ = buttons;
+    frameButtonState_ = packet.buttonState;
+    frameGripValue_ = {packet.leftGrip, packet.rightGrip};
+    controllerProfile_ = packet.controllerProfile;
+    touchState_ = packet.touchState;
+    leftTrigger_ = packet.leftTrigger;
+    rightTrigger_ = packet.rightTrigger;
+    leftGripValue_ = leftGrip;
+    rightGripValue_ = rightGrip;
+    leftThumbstick_ = {packet.leftThumbstick[0], packet.leftThumbstick[1]};
+    rightThumbstick_ = {packet.rightThumbstick[0], packet.rightThumbstick[1]};
+    leftGrab_ = leftGrip > 0.5f;
+    rightGrab_ = rightGrip > 0.5f;
+    menuClick_ = (buttons & oxr::protocol::BUTTON_MENU) != 0;
+    streamingIpd_ = packet.ipd;
+    streamingFov_[0] = packet.eyeFov[0];
+    streamingFov_[1] = packet.eyeFov[1];
+    streamingFov_[2] = packet.eyeFov[2];
+    streamingFov_[3] = packet.eyeFov[3];
+
+    for (size_t handIndex = 0; handIndex < 2; ++handIndex)
+    {
+        const bool streamedHandActive =
+            (packet.trackingFlags &
+             (handIndex == 0 ? oxr::protocol::TRACKING_FLAG_LEFT_HAND_ACTIVE
+                             : oxr::protocol::TRACKING_FLAG_RIGHT_HAND_ACTIVE)) != 0;
+        const bool previousHandActive = streamingHands_[handIndex].active;
+        streamingHands_[handIndex].active = streamedHandActive;
+        if (streamedHandActive != previousHandActive)
+        {
+            spdlog::info("InputManager: {} hand {} flags=0x{:x}",
+                         handIndex == 0 ? "left" : "right",
+                         streamedHandActive ? "active" : "inactive",
+                         packet.trackingFlags);
+        }
+
+        const auto& sourceJoints = handIndex == 0 ? packet.leftHandJoints : packet.rightHandJoints;
+        for (size_t jointIndex = 0; jointIndex < oxr::protocol::HAND_JOINT_COUNT; ++jointIndex)
+        {
+            streamingHands_[handIndex].joints[jointIndex] = glm::vec4(
+                sourceJoints[jointIndex][0],
+                sourceJoints[jointIndex][1],
+                sourceJoints[jointIndex][2],
+                sourceJoints[jointIndex][3]);
+        }
+        const bool hasRotations =
+            (packet.trackingFlags & oxr::protocol::TRACKING_FLAG_HAND_JOINT_ROTATIONS_VALID) != 0;
+        streamingHands_[handIndex].hasRotations = hasRotations;
+        if (hasRotations)
+        {
+            const auto& sourceRotations =
+                handIndex == 0 ? packet.leftHandJointRotations : packet.rightHandJointRotations;
+            for (size_t jointIndex = 0; jointIndex < oxr::protocol::HAND_JOINT_COUNT; ++jointIndex)
+            {
+                constexpr float kScale = 1.0f / 32767.0f;
+                glm::quat q(sourceRotations[jointIndex][3] * kScale,   // w
+                            sourceRotations[jointIndex][0] * kScale,   // x
+                            sourceRotations[jointIndex][1] * kScale,   // y
+                            sourceRotations[jointIndex][2] * kScale);  // z
+                const float len = glm::length(q);
+                streamingHands_[handIndex].rotations[jointIndex] =
+                    len > 1e-4f ? q / len : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            }
+        }
+    }
+
+    // Debug: log streaming pose periodically
+    static uint32_t streamLogCounter = 0;
+    if (++streamLogCounter % 270 == 0) // ~3 seconds
+    {
+        spdlog::info("InputManager: streaming pos=({:.3f}, {:.3f}, {:.3f}) "
+                      "L=({:.3f},{:.3f},{:.3f}) R=({:.3f},{:.3f},{:.3f}) "
+                      "trig={:.2f}/{:.2f} grip={:.2f}/{:.2f} btn=0x{:x} flags=0x{:x}",
+                      headPosition_.x, headPosition_.y, headPosition_.z,
+                      leftControllerPos_.x, leftControllerPos_.y, leftControllerPos_.z,
+                      rightControllerPos_.x, rightControllerPos_.y, rightControllerPos_.z,
+                      leftTrigger_, rightTrigger_, leftGripValue_, rightGripValue_,
+                      buttonState_, packet.trackingFlags);
+        // Quaternion diagnostics: head vs left controller (received, as glm w,x,y,z).
+        spdlog::info("InputManager: quat head=(x{:.3f} y{:.3f} z{:.3f} w{:.3f}) "
+                      "Lctrl=(x{:.3f} y{:.3f} z{:.3f} w{:.3f})",
+                      headQuat_.x, headQuat_.y, headQuat_.z, headQuat_.w,
+                      leftControllerRot_.x, leftControllerRot_.y,
+                      leftControllerRot_.z, leftControllerRot_.w);
+    }
+
+    // Log Quest IPD/FOV on first packet for debugging
+    static bool loggedOnce = false;
+    if (!loggedOnce && packet.ipd > 0.0f)
+    {
+        spdlog::info("InputManager: Quest IPD={:.1f}mm FOV L={:.2f} R={:.2f} U={:.2f} D={:.2f} (rad), prediction={:.1f}ms",
+                      packet.ipd * 1000.0f,
+                      packet.eyeFov[0], packet.eyeFov[1],
+                      packet.eyeFov[2], packet.eyeFov[3],
+                      trackingReceiver_->GetPredictionHorizonMs());
+        loggedOnce = true;
+    }
+}
+
+// OXRSYS_FRAME_XBOX=1: lay the Frame's controllers out for an app that turns Touch into an Xbox pad (UEVR: right a =
+// A, left x = B, right b = X, left y = Y, squeeze = LB/RB, menu = Start). SteamVR's own Frame-to-Touch remap folds
+// right B, X and Y into one button and the d-pad into two, and drops the bumpers and the right menu; the Frame
+// client's per-input bits carry each one, so the Touch bits are rebuilt from those: each Frame letter lands on the
+// Xbox button of the same letter, the bumpers press the grips and the right menu is MENU. A packet without Frame bits
+// (another client, or nothing pressed) is left alone. Frame-profile bindings read the unmapped state
+// (frameButtonState_, frameGripValue_), so this never changes them. Sifu under UEVR, 2026-10-26.
+void InputManager::ApplyFrameXboxLayout(uint32_t& buttons, float& leftGrip, float& rightGrip)
+{
+    using namespace oxr::protocol;
+    constexpr uint32_t kFrameBits = BUTTON_FRAME_A | BUTTON_FRAME_B | BUTTON_FRAME_X | BUTTON_FRAME_Y |
+                                    BUTTON_FRAME_DPAD_UP | BUTTON_FRAME_DPAD_DOWN | BUTTON_FRAME_DPAD_LEFT |
+                                    BUTTON_FRAME_DPAD_RIGHT | BUTTON_FRAME_RIGHT_MENU | BUTTON_LEFT_BUMPER |
+                                    BUTTON_RIGHT_BUMPER;
+    if ((buttons & kFrameBits) == 0)
+    {
+        return;
+    }
+    uint32_t b = buttons & ~(BUTTON_A | BUTTON_B | BUTTON_X | BUTTON_Y);
+    if (buttons & BUTTON_FRAME_A) b |= BUTTON_A;   // right a -> Xbox A
+    if (buttons & BUTTON_FRAME_B) b |= BUTTON_X;   // left x  -> Xbox B
+    if (buttons & BUTTON_FRAME_X) b |= BUTTON_B;   // right b -> Xbox X
+    if (buttons & BUTTON_FRAME_Y) b |= BUTTON_Y;   // left y  -> Xbox Y
+    if (buttons & BUTTON_FRAME_RIGHT_MENU) b |= BUTTON_MENU;
+    if (buttons & BUTTON_LEFT_BUMPER) leftGrip = 1.0f;
+    if (buttons & BUTTON_RIGHT_BUMPER) rightGrip = 1.0f;
+    buttons = b;
+}
+
+XrPosef InputManager::GetHeadPose() const
+{
+    glm::quat rot = GetHeadRotation();
+
+    XrPosef pose{};
+    pose.orientation.x = rot.x;
+    pose.orientation.y = rot.y;
+    pose.orientation.z = rot.z;
+    pose.orientation.w = rot.w;
+    pose.position.x = headPosition_.x;
+    pose.position.y = headPosition_.y;
+    pose.position.z = headPosition_.z;
+    return pose;
+}
+
+void InputManager::RecenterLocalReference()
+{
+    std::lock_guard<std::mutex> lock(localReferenceMutex_);
+    localReferencePosition_ = headPosition_;
+    localReferenceYaw_ = YawOnly(headQuat_);
+}
+
+XrPosef InputManager::GetReferenceSpacePose(XrReferenceSpaceType referenceSpaceType) const
+{
+    XrPosef pose{};
+    pose.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+    pose.position = {0.0f, 0.0f, 0.0f};
+
+    // Manual floor calibration. The origin's Y is shifted by -offset so that a
+    // pose located relative to it (headY - originY) becomes headY + offset:
+    // positive offset raises the player, negative lowers them. Default 0 leaves
+    // the client's floor-relative pose untouched.
+    const float stageOffset = Config::Get().GetValues().stageHeightOffsetM;
+    const float floorOriginY = -stageOffset;
+    std::lock_guard<std::mutex> lock(localReferenceMutex_);
+
+    switch (referenceSpaceType)
+    {
+        case XR_REFERENCE_SPACE_TYPE_STAGE:
+            // Client head pose is already STAGE (physical-floor) relative; only
+            // the optional manual floor calibration is applied.
+            pose.position = {0.0f, floorOriginY, 0.0f};
+            break;
+
+        case XR_REFERENCE_SPACE_TYPE_LOCAL:
+            if (localReferenceCaptured_)
+            {
+                pose.position = {localReferencePosition_.x,
+                                 localReferencePosition_.y,
+                                 localReferencePosition_.z};
+                pose.orientation = {localReferenceYaw_.x, localReferenceYaw_.y,
+                                    localReferenceYaw_.z, localReferenceYaw_.w};
+            }
+            else
+            {
+                // MacXR Bridge: before the first streamed head pose, LOCAL still sits at eye level
+                // (the default head position), never on the floor. Unity's OpenXR plugin treats a
+                // LOCAL_FLOOR that coincides with LOCAL as "floor unknown" and re-creates the Floor
+                // app space every frame, which breaks xrEndFrame for OVRPlugin.
+                pose.position = {headPosition_.x, headPosition_.y, headPosition_.z};
+            }
+            break;
+
+        case XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR:
+            // LOCAL's horizontal position and yaw, but anchored at floor height.
+            if (localReferenceCaptured_)
+            {
+                pose.position = {localReferencePosition_.x, floorOriginY, localReferencePosition_.z};
+                pose.orientation = {localReferenceYaw_.x, localReferenceYaw_.y,
+                                    localReferenceYaw_.z, localReferenceYaw_.w};
+            }
+            else
+            {
+                pose.position = {headPosition_.x, floorOriginY, headPosition_.z};
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    return pose;
+}
+
+void InputManager::GetEyeViews(XrView* views, uint32_t viewCount) const
+{
+    if (viewCount < 2)
+    {
+        return;
+    }
+
+    glm::quat rot = GetHeadRotation();
+    glm::vec3 right = rot * glm::vec3(1.0f, 0.0f, 0.0f);
+    float ipd = (IsStreaming() && streamingIpd_ > 0.0f)
+        ? streamingIpd_
+        : DefaultIpd;
+    float halfIpd = ipd * 0.5f;
+
+    bool hasStreamingFov = IsStreaming() &&
+        streamingFov_[0] < 0.0f && streamingFov_[1] > 0.0f &&
+        streamingFov_[2] > 0.0f && streamingFov_[3] < 0.0f;
+
+    for (uint32_t i = 0; i < 2; i++)
+    {
+        views[i].type = XR_TYPE_VIEW;
+        views[i].next = nullptr;
+
+        float sign = (i == 0) ? -1.0f : 1.0f;
+        glm::vec3 eyePos = headPosition_ + right * (sign * halfIpd);
+
+        views[i].pose.orientation.x = rot.x;
+        views[i].pose.orientation.y = rot.y;
+        views[i].pose.orientation.z = rot.z;
+        views[i].pose.orientation.w = rot.w;
+        views[i].pose.position.x = eyePos.x;
+        views[i].pose.position.y = eyePos.y;
+        views[i].pose.position.z = eyePos.z;
+
+        // Legacy fallback for clients that do not send TrackingPacket.eyeFov.
+        // fov_degrees is the vertical FOV; horizontal FOV is derived from the
+        // texture aspect ratio so angular pixels are square.
+        if (hasStreamingFov)
+        {
+            if (i == 0)
+            {
+                views[i].fov.angleLeft = streamingFov_[0];
+                views[i].fov.angleRight = streamingFov_[1];
+            }
+            else
+            {
+                views[i].fov.angleLeft = -streamingFov_[1];
+                views[i].fov.angleRight = -streamingFov_[0];
+            }
+            views[i].fov.angleUp = streamingFov_[2];
+            views[i].fov.angleDown = streamingFov_[3];
+        }
+        else
+        {
+            const ConfigValues config = Config::Get().GetValues();
+            float fovDeg = static_cast<float>(config.fovDegrees);
+            float halfAngleV = fovDeg * 0.5f * 3.14159265f / 180.0f;
+            uint32_t baseWidth = 0;
+            uint32_t baseHeight = 0;
+            RenderBaseEyeResolution(baseWidth, baseHeight);
+            const float aspect = static_cast<float>(baseWidth) /
+                                 static_cast<float>(baseHeight);
+            float halfAngleH = std::atan(std::tan(halfAngleV) * aspect);
+            views[i].fov.angleLeft = -halfAngleH;
+            views[i].fov.angleRight = halfAngleH;
+            views[i].fov.angleUp = halfAngleV;
+            views[i].fov.angleDown = -halfAngleV;
+        }
+    }
+
+    static bool loggedFov = false;
+    if (!loggedFov)
+    {
+        spdlog::info("InputManager: Using {} FOV/IPD (L={:.2f} R={:.2f} U={:.2f} D={:.2f}, IPD={:.1f}mm)",
+                      hasStreamingFov ? "streaming" : "default",
+                      views[0].fov.angleLeft, views[0].fov.angleRight,
+                      views[0].fov.angleUp, views[0].fov.angleDown,
+                      ipd * 1000.0f);
+        loggedFov = true;
+    }
+}
+
+XrSpaceVelocity InputManager::GetHeadVelocity() const
+{
+    oxr::protocol::TrackingPacket packet = {};
+    if (trackingReceiver_ == nullptr || !trackingReceiver_->GetFreshPose(packet))
+    {
+        return {XR_TYPE_SPACE_VELOCITY};
+    }
+    return ReadTrackedVelocity(
+        (packet.trackingFlags & oxr::protocol::TRACKING_FLAG_HEAD_LINEAR_VELOCITY_VALID) != 0,
+        (packet.trackingFlags & oxr::protocol::TRACKING_FLAG_HEAD_ANGULAR_VELOCITY_VALID) != 0,
+        packet.headLinearVelocity, packet.headAngularVelocity);
+}
+
+bool InputManager::GetStageBounds(XrExtent2Df& bounds) const
+{
+    bounds = {};
+    oxr::protocol::TrackingPacket packet = {};
+    if (trackingReceiver_ == nullptr || !trackingReceiver_->GetFreshPose(packet) ||
+        (packet.trackingFlags & oxr::protocol::TRACKING_FLAG_STAGE_BOUNDS_VALID) == 0 ||
+        !std::isfinite(packet.stageBoundsWidth) || !std::isfinite(packet.stageBoundsHeight) ||
+        packet.stageBoundsWidth <= 0.0f || packet.stageBoundsHeight <= 0.0f)
+    {
+        return false;
+    }
+    bounds = {packet.stageBoundsWidth, packet.stageBoundsHeight};
+    return true;
+}
+
+XrPosef InputManager::GetControllerPose(Hand hand) const
+{
+    const glm::vec3& pos = (hand == Hand::Left) ? leftControllerPos_ : rightControllerPos_;
+
+    glm::quat rot = (hand == Hand::Left) ? leftControllerRot_ : rightControllerRot_;
+
+    XrPosef pose{};
+    pose.orientation.x = rot.x;
+    pose.orientation.y = rot.y;
+    pose.orientation.z = rot.z;
+    pose.orientation.w = rot.w;
+    pose.position.x = pos.x;
+    pose.position.y = pos.y;
+    pose.position.z = pos.z;
+    return pose;
+}
+
+XrPosef InputManager::GetControllerAimPose(Hand hand) const
+{
+    const glm::vec3& pos = (hand == Hand::Left) ? leftControllerAimPos_ : rightControllerAimPos_;
+    glm::quat rot = (hand == Hand::Left) ? leftControllerAimRot_ : rightControllerAimRot_;
+
+    // Clients that don't populate the aim pose leave it in one of two "unset" shapes: all-zero
+    // (C++ zero-init on a short/legacy packet) or an identity rotation with a zero position (the
+    // Swift TrackingPacket defaults aim rotation to (0,0,0,1)). Treat both as "not provided" and
+    // fall back to the grip pose, otherwise an identity-defaulted client pins the aim pose at the
+    // world origin and the controller never appears to move.
+    if (IsUnsetAimPose(pos, rot))
+    {
+        return GetControllerPose(hand);
+    }
+
+    XrPosef pose{};
+    pose.orientation.x = rot.x;
+    pose.orientation.y = rot.y;
+    pose.orientation.z = rot.z;
+    pose.orientation.w = rot.w;
+    pose.position.x = pos.x;
+    pose.position.y = pos.y;
+    pose.position.z = pos.z;
+    return pose;
+}
+
+float InputManager::GetGrabValue(Hand hand) const
+{
+    return (hand == Hand::Left) ? leftGripValue_ : rightGripValue_;
+}
+
+bool InputManager::GetMenuClick() const
+{
+    return menuClick_;
+}
+
+float InputManager::GetTriggerValue(Hand hand) const
+{
+    return (hand == Hand::Left) ? leftTrigger_ : rightTrigger_;
+}
+
+XrVector2f InputManager::GetThumbstickValue(Hand hand) const
+{
+    return (hand == Hand::Left) ? leftThumbstick_ : rightThumbstick_;
+}
+
+const InputManager::AutomationHandState& InputManager::GetAutomationState(Hand hand) const
+{
+    return automationHands_[HandIndex(hand)];
+}
+
+InputManager::AutomationHandState& InputManager::GetAutomationState(Hand hand)
+{
+    return automationHands_[HandIndex(hand)];
+}
+
+void InputManager::SetAutomationInteractionProfile(Hand hand, const std::string& interactionProfile, bool isActive)
+{
+    auto& automation = GetAutomationState(hand);
+    automation.hasExplicitActivity = true;
+    automation.isActive = isActive;
+    automation.interactionProfile = interactionProfile;
+}
+
+void InputManager::SetAutomationBoolean(Hand hand, const std::string& componentPath, bool state)
+{
+    GetAutomationState(hand).boolStates[componentPath] = state;
+}
+
+void InputManager::SetAutomationFloat(Hand hand, const std::string& componentPath, float state)
+{
+    GetAutomationState(hand).floatStates[componentPath] = state;
+}
+
+void InputManager::SetAutomationVector2f(Hand hand, const std::string& componentPath, XrVector2f state)
+{
+    GetAutomationState(hand).vector2fStates[componentPath] = state;
+}
+
+void InputManager::SetAutomationPose(Hand hand, const std::string& componentPath, const XrPosef& pose)
+{
+    GetAutomationState(hand).poseStates[componentPath] = pose;
+}
+
+bool InputManager::IsInputDeviceActive(Hand hand) const
+{
+    const auto& automation = GetAutomationState(hand);
+    if (automation.hasExplicitActivity)
+    {
+        return automation.isActive;
+    }
+
+    return IsHandTrackingActive(hand) || IsControllerTrackingActive(hand);
+}
+
+bool InputManager::IsControllerTrackingActive(Hand hand) const
+{
+    if (IsStreaming())
+    {
+        return streamingControllerActive_[HandIndex(hand)];
+    }
+
+    return false;
+}
+
+bool InputManager::IsHandTrackingActive(Hand hand) const
+{
+    if (IsStreaming())
+    {
+        return streamingHands_[HandIndex(hand)].active;
+    }
+
+    return false;
+}
+
+std::string InputManager::GetCurrentInteractionProfile(Hand hand) const
+{
+    const std::vector<std::string> candidates = GetCurrentInteractionProfileCandidates(hand);
+    return candidates.empty() ? "" : candidates.front();
+}
+
+std::vector<std::string> InputManager::GetCurrentInteractionProfileCandidates(Hand hand) const
+{
+    const auto& automation = GetAutomationState(hand);
+    if (automation.hasExplicitActivity)
+    {
+        if (!automation.isActive)
+        {
+            return {};
+        }
+        if (!automation.interactionProfile.empty())
+        {
+            return {automation.interactionProfile};
+        }
+    }
+
+    if (IsControllerTrackingActive(hand))
+    {
+        // The client knows what is in the hand better than its name does: the Steam Frame client reports the
+        // Frame's own profile when SteamVR bound it. Apps that do not know that profile get Touch from the
+        // compatibility list below, which is what SteamVR's own emulation gives them.
+        if (controllerProfile_ == oxr::protocol::CONTROLLER_PROFILE_VALVE_FRAME)
+        {
+            return {kValveFrameProfile};
+        }
+        return {streamingControllerProfile_.empty() ? kOculusTouchProfile
+                                                    : streamingControllerProfile_};
+    }
+
+    if (IsHandTrackingActive(hand))
+    {
+        return {kHandInteractionProfile};
+    }
+
+    // Nothing is tracked in this hand, with or without a client: report no profile (XR_NULL_PATH). Before a client
+    // connects, a khr/simple_controller fallback here is what apps that bind the first profile they see at session
+    // start keep, and they never take the switch to the client's controller profile when it connects.
+    return {};
+}
+
+std::vector<std::string> InputManager::GetActiveInteractionProfiles(Hand hand) const
+{
+    std::vector<std::string> profiles;
+    const std::string currentProfile = GetCurrentInteractionProfile(hand);
+    AddProfileIfMissing(profiles, currentProfile);
+
+    const auto& automation = GetAutomationState(hand);
+    if (automation.hasExplicitActivity)
+    {
+        return profiles;
+    }
+
+    if (IsControllerTrackingActive(hand))
+    {
+        if (currentProfile.find("/interaction_profiles/meta/") == 0 ||
+            currentProfile == kOculusTouchProfile || currentProfile == kValveFrameProfile)
+        {
+            AddProfileIfMissing(profiles, kOculusTouchProfile);
+        }
+        AddProfileIfMissing(profiles, kSimpleControllerProfile);
+    }
+    if (IsHandTrackingActive(hand))
+    {
+        AddProfileIfMissing(profiles, kHandInteractionProfile);
+    }
+
+    return profiles;
+}
+
+bool InputManager::GetButtonClick(Hand hand, const std::string& componentPath) const
+{
+    const auto& automation = GetAutomationState(hand);
+    auto boolIt = automation.boolStates.find(componentPath);
+    if (boolIt != automation.boolStates.end())
+    {
+        return boolIt->second;
+    }
+
+    if (componentPath == "menu/click")
+    {
+        return GetMenuClick();
+    }
+    if (componentPath == "select/click")
+    {
+        return GetTriggerValue(hand) > 0.5f;
+    }
+    if (componentPath == "trigger/click")
+    {
+        return GetTriggerValue(hand) > 0.5f;
+    }
+    if (componentPath == "trigger/touch")
+    {
+        return GetTriggerValue(hand) > 0.01f;
+    }
+    if (componentPath == "squeeze/click")
+    {
+        return GetGrabValue(hand) > 0.5f;
+    }
+    // The Frame's left d-pad under a non-Frame profile (UEVR binds it through its own profile JSON); only the Frame
+    // client sets these bits.
+    if (componentPath.starts_with("dpad_") && componentPath.ends_with("/click"))
+    {
+        using namespace oxr::protocol;
+        const uint32_t bit = componentPath == "dpad_up/click"      ? BUTTON_FRAME_DPAD_UP
+                             : componentPath == "dpad_down/click"  ? BUTTON_FRAME_DPAD_DOWN
+                             : componentPath == "dpad_left/click"  ? BUTTON_FRAME_DPAD_LEFT
+                             : componentPath == "dpad_right/click" ? BUTTON_FRAME_DPAD_RIGHT
+                                                                   : 0u;
+        return hand == Hand::Left && bit != 0 && (buttonState_ & bit) != 0;
+    }
+    // The oculus/touch profile has no squeeze/click or trigger/click component — grip and trigger
+    // are analog-only (squeeze/value, trigger/value). Per the OpenXR spec, a boolean action bound
+    // to a float source must be thresholded by the runtime. Without this a boolean grip/trigger
+    // action bound to the value path always reads false (grip "never clicks").
+    if (componentPath == "squeeze/value")
+    {
+        return GetGrabValue(hand) > 0.5f;
+    }
+    if (componentPath == "trigger/value")
+    {
+        return GetTriggerValue(hand) > 0.5f;
+    }
+    if (componentPath == "thumbstick/click")
+    {
+        uint32_t mask = (hand == Hand::Left)
+                            ? oxr::protocol::BUTTON_LEFT_THUMBSTICK
+                            : oxr::protocol::BUTTON_RIGHT_THUMBSTICK;
+        return (buttonState_ & mask) != 0;
+    }
+    if (componentPath == "thumbstick/touch" || componentPath == "thumbrest/touch")
+    {
+        XrVector2f thumbstick = GetThumbstickValue(hand);
+        return std::fabs(thumbstick.x) > 0.01f || std::fabs(thumbstick.y) > 0.01f;
+    }
+    if (componentPath == "a/click" || componentPath == "a/touch")
+    {
+        return hand == Hand::Right && (buttonState_ & oxr::protocol::BUTTON_A) != 0;
+    }
+    if (componentPath == "b/click" || componentPath == "b/touch")
+    {
+        return hand == Hand::Right && (buttonState_ & oxr::protocol::BUTTON_B) != 0;
+    }
+    if (componentPath == "x/click" || componentPath == "x/touch")
+    {
+        return hand == Hand::Left && (buttonState_ & oxr::protocol::BUTTON_X) != 0;
+    }
+    if (componentPath == "y/click" || componentPath == "y/touch")
+    {
+        return hand == Hand::Left && (buttonState_ & oxr::protocol::BUTTON_Y) != 0;
+    }
+    if (componentPath == "pinch_ext/ready_ext" || componentPath == "grasp_ext/ready_ext" ||
+        componentPath == "aim_activate_ext/ready_ext")
+    {
+        return IsHandTrackingActive(hand);
+    }
+
+    return false;
+}
+
+// The Steam Frame controller's inputs (XR_VALVE_frame_controller_interaction), from the client's per-input bits.
+// The right hand has A, B, X, Y and menu; the left a four-way d-pad and view; both a bumper.
+bool InputManager::GetFrameControllerComponent(Hand hand, const std::string& componentPath) const
+{
+    using namespace oxr::protocol;
+    const bool left = hand == Hand::Left;
+    const size_t slash = componentPath.find('/');
+    const std::string input = componentPath.substr(0, slash);
+    const std::string kind = slash == std::string::npos ? "" : componentPath.substr(slash + 1);
+    if (componentPath == "squeeze/value")
+    {
+        return frameGripValue_[HandIndex(hand)] > 0.5f;
+    }
+    if (kind != "click" && kind != "touch")
+    {
+        return GetButtonClick(hand, componentPath);   // the float threshold: trigger/value
+    }
+    const uint32_t bits = (kind == "touch") ? touchState_ : frameButtonState_;
+
+    uint32_t mask = 0;
+    if (!left && input == "a") mask = BUTTON_FRAME_A;
+    else if (!left && input == "b") mask = BUTTON_FRAME_B;
+    else if (!left && input == "x") mask = BUTTON_FRAME_X;
+    else if (!left && input == "y") mask = BUTTON_FRAME_Y;
+    else if (!left && input == "menu") mask = BUTTON_FRAME_RIGHT_MENU;
+    else if (left && input == "dpad_up") mask = BUTTON_FRAME_DPAD_UP;
+    else if (left && input == "dpad_down") mask = BUTTON_FRAME_DPAD_DOWN;
+    else if (left && input == "dpad_left") mask = BUTTON_FRAME_DPAD_LEFT;
+    else if (left && input == "dpad_right") mask = BUTTON_FRAME_DPAD_RIGHT;
+    else if (left && input == "view") mask = BUTTON_MENU;
+    else if (input == "bumper") mask = left ? BUTTON_LEFT_BUMPER : BUTTON_RIGHT_BUMPER;
+    else if (input == "squeeze") mask = left ? BUTTON_LEFT_GRIP : BUTTON_RIGHT_GRIP;
+    else if (input == "trigger") mask = left ? BUTTON_LEFT_TRIGGER : BUTTON_RIGHT_TRIGGER;
+    else if (input == "thumbstick") mask = left ? BUTTON_LEFT_THUMBSTICK : BUTTON_RIGHT_THUMBSTICK;
+    return (bits & mask) != 0;   // system, and an input on the wrong hand, read false
+}
+
+bool InputManager::GetBooleanComponent(Hand hand, const std::string& componentPath) const
+{
+    return GetBooleanComponentForProfile(hand, componentPath, "");
+}
+
+bool InputManager::GetBooleanComponentForProfile(Hand hand, const std::string& componentPath,
+                                                 const std::string& profilePath) const
+{
+    const auto& automation = GetAutomationState(hand);
+    auto boolIt = automation.boolStates.find(componentPath);
+    if (boolIt != automation.boolStates.end())
+    {
+        return boolIt->second;
+    }
+
+    const bool handInteractionProfile = IsHandInteractionProfile(profilePath);
+    if (handInteractionProfile)
+    {
+        if (const uint32_t microBit = MicrogestureBit(hand, componentPath))
+        {
+            return (buttonState_ & microBit) != 0;
+        }
+        if (componentPath == "pinch_ext/ready_ext" ||
+            componentPath == "grasp_ext/ready_ext" ||
+            componentPath == "aim_activate_ext/ready_ext")
+        {
+            return IsHandTrackingActive(hand);
+        }
+        return false;
+    }
+
+    if (!profilePath.empty() && IsHandInteractionComponent(componentPath))
+    {
+        return false;
+    }
+
+    if (profilePath == kValveFrameProfile)
+    {
+        return GetFrameControllerComponent(hand, componentPath);
+    }
+
+    return GetButtonClick(hand, componentPath);
+}
+
+float InputManager::GetFloatComponent(Hand hand, const std::string& componentPath) const
+{
+    return GetFloatComponentForProfile(hand, componentPath, "");
+}
+
+float InputManager::GetFloatComponentForProfile(Hand hand, const std::string& componentPath,
+                                                const std::string& profilePath) const
+{
+    const auto& automation = GetAutomationState(hand);
+    auto floatIt = automation.floatStates.find(componentPath);
+    if (floatIt != automation.floatStates.end())
+    {
+        return floatIt->second;
+    }
+
+    const bool handInteractionProfile = IsHandInteractionProfile(profilePath);
+    if (handInteractionProfile)
+    {
+        if (componentPath == "grasp_ext/value")
+        {
+            return GetTrackedGraspValue(hand);
+        }
+        if (componentPath == "pinch_ext/value" ||
+            componentPath == "aim_activate_ext/value")
+        {
+            return GetTrackedPinchValue(hand);
+        }
+        return GetBooleanComponentForProfile(hand, componentPath, profilePath) ? 1.0f : 0.0f;
+    }
+
+    if (!profilePath.empty() && IsHandInteractionComponent(componentPath))
+    {
+        return 0.0f;
+    }
+
+    if (componentPath == "select/value")
+    {
+        return GetTriggerValue(hand);
+    }
+    if (componentPath == "trigger/value")
+    {
+        return GetTriggerValue(hand);
+    }
+    if (componentPath == "squeeze/value")
+    {
+        return profilePath == kValveFrameProfile ? frameGripValue_[HandIndex(hand)] : GetGrabValue(hand);
+    }
+    if (componentPath == "thumbstick/x")
+    {
+        return GetThumbstickValue(hand).x;
+    }
+    if (componentPath == "thumbstick/y")
+    {
+        return GetThumbstickValue(hand).y;
+    }
+    if (componentPath == "pinch_ext/value" || componentPath == "grasp_ext/value" ||
+        componentPath == "aim_activate_ext/value")
+    {
+        if (componentPath == "grasp_ext/value")
+        {
+            return GetTrackedGraspValue(hand);
+        }
+        return GetTrackedPinchValue(hand);
+    }
+
+    return GetBooleanComponentForProfile(hand, componentPath, profilePath) ? 1.0f : 0.0f;
+}
+
+XrVector2f InputManager::GetVector2fComponent(Hand hand, const std::string& componentPath) const
+{
+    return GetVector2fComponentForProfile(hand, componentPath, "");
+}
+
+XrVector2f InputManager::GetVector2fComponentForProfile(Hand hand, const std::string& componentPath,
+                                                        const std::string& profilePath) const
+{
+    const auto& automation = GetAutomationState(hand);
+    auto vecIt = automation.vector2fStates.find(componentPath);
+    if (vecIt != automation.vector2fStates.end())
+    {
+        return vecIt->second;
+    }
+
+    if (IsHandInteractionProfile(profilePath) ||
+        (!profilePath.empty() && IsHandInteractionComponent(componentPath)))
+    {
+        return {0.0f, 0.0f};
+    }
+
+    if (componentPath == "thumbstick")
+    {
+        return GetThumbstickValue(hand);
+    }
+
+    return {0.0f, 0.0f};
+}
+
+XrPosef InputManager::GetPoseComponent(Hand hand, const std::string& componentPath) const
+{
+    return GetPoseComponentForProfile(hand, componentPath, "");
+}
+
+XrPosef InputManager::GetPoseComponentForProfile(Hand hand, const std::string& componentPath,
+                                                 const std::string& profilePath) const
+{
+    const auto& automation = GetAutomationState(hand);
+    auto poseIt = automation.poseStates.find(componentPath);
+    if (poseIt != automation.poseStates.end())
+    {
+        return poseIt->second;
+    }
+
+    const bool handInteractionProfile = IsHandInteractionProfile(profilePath);
+    if (handInteractionProfile && IsHandTrackingActive(hand))
+    {
+        return GetTrackedHandPose(hand, componentPath);
+    }
+
+    if (componentPath == "grip/pose" || componentPath == "aim/pose")
+    {
+        if (profilePath.empty() && IsHandTrackingActive(hand))
+        {
+            return GetTrackedHandPose(hand, componentPath);
+        }
+        // grip and aim poses differ (~45-60° on Touch); return each from the client's distinct
+        // streamed pose so games placing content from aim/pose aren't tilted by the grip offset.
+        return (componentPath == "aim/pose") ? GetControllerAimPose(hand)
+                                             : GetControllerPose(hand);
+    }
+
+    if (componentPath == "pinch_ext/pose" || componentPath == "poke_ext/pose")
+    {
+        if (profilePath.empty() && IsHandTrackingActive(hand))
+        {
+            return GetTrackedHandPose(hand, componentPath);
+        }
+        XrPosef pose = GetControllerPose(hand);
+        pose.position.z -= 0.05f;
+        return pose;
+    }
+
+    if (profilePath.empty() && IsHandInteractionComponent(componentPath) &&
+        IsHandTrackingActive(hand))
+    {
+        return GetTrackedHandPose(hand, componentPath);
+    }
+
+    return GetControllerPose(hand);
+}
+
+XrSpaceVelocity InputManager::GetPoseVelocityForProfile(Hand hand, const std::string& componentPath,
+                                                       const std::string& profilePath) const
+{
+    const auto& automation = GetAutomationState(hand);
+    if ((componentPath != "grip/pose" && componentPath != "aim/pose") ||
+        automation.poseStates.contains(componentPath) ||
+        (automation.hasExplicitActivity && !automation.isActive) ||
+        IsHandInteractionProfile(profilePath) ||
+        (profilePath.empty() && IsHandTrackingActive(hand)))
+    {
+        return {XR_TYPE_SPACE_VELOCITY};
+    }
+
+    oxr::protocol::TrackingPacket packet = {};
+    if (trackingReceiver_ == nullptr || !trackingReceiver_->GetFreshPose(packet))
+    {
+        return {XR_TYPE_SPACE_VELOCITY};
+    }
+    const uint32_t activeFlag = hand == Hand::Left
+        ? oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE
+        : oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE;
+    if ((packet.trackingFlags & activeFlag) == 0)
+    {
+        return {XR_TYPE_SPACE_VELOCITY};
+    }
+
+    const glm::vec3& pos = hand == Hand::Left ? leftControllerAimPos_ : rightControllerAimPos_;
+    const glm::quat& rot = hand == Hand::Left ? leftControllerAimRot_ : rightControllerAimRot_;
+    const bool aim = componentPath == "aim/pose" && !IsUnsetAimPose(pos, rot);
+    if (hand == Hand::Left)
+    {
+        return ReadTrackedVelocity(
+            (packet.trackingFlags & (aim
+                ? oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_AIM_LINEAR_VELOCITY_VALID
+                : oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_LINEAR_VELOCITY_VALID)) != 0,
+            (packet.trackingFlags & (aim
+                ? oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_AIM_ANGULAR_VELOCITY_VALID
+                : oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ANGULAR_VELOCITY_VALID)) != 0,
+            aim ? packet.leftControllerAimLinearVelocity : packet.leftControllerLinearVelocity,
+            aim ? packet.leftControllerAimAngularVelocity : packet.leftControllerAngularVelocity);
+    }
+    return ReadTrackedVelocity(
+        (packet.trackingFlags & (aim
+            ? oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_AIM_LINEAR_VELOCITY_VALID
+            : oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_LINEAR_VELOCITY_VALID)) != 0,
+        (packet.trackingFlags & (aim
+            ? oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ANGULAR_VELOCITY_VALID
+            : oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ANGULAR_VELOCITY_VALID)) != 0,
+        aim ? packet.rightControllerAimLinearVelocity : packet.rightControllerLinearVelocity,
+        aim ? packet.rightControllerAimAngularVelocity : packet.rightControllerAngularVelocity);
+}
+
+float InputManager::GetTrackedPinchValue(Hand hand) const
+{
+    if (!IsHandTrackingActive(hand))
+    {
+        return 0.0f;
+    }
+
+    const auto& handState = streamingHands_[HandIndex(hand)];
+    glm::vec3 thumbTip = JointVec3(handState, XR_HAND_JOINT_THUMB_TIP_EXT);
+    glm::vec3 indexTip = JointVec3(handState, XR_HAND_JOINT_INDEX_TIP_EXT);
+    float distance = glm::length(thumbTip - indexTip);
+    constexpr float ClosedDistance = 0.015f;
+    constexpr float OpenDistance = 0.065f;
+    float normalized = 1.0f - std::clamp((distance - ClosedDistance) / (OpenDistance - ClosedDistance),
+                                         0.0f, 1.0f);
+    return normalized;
+}
+
+float InputManager::GetTrackedGraspValue(Hand hand) const
+{
+    if (!IsHandTrackingActive(hand))
+    {
+        return 0.0f;
+    }
+
+    const auto& handState = streamingHands_[HandIndex(hand)];
+    glm::vec3 palm = JointVec3(handState, XR_HAND_JOINT_PALM_EXT);
+    constexpr std::array<uint32_t, 4> FingerTips = {
+        XR_HAND_JOINT_INDEX_TIP_EXT,
+        XR_HAND_JOINT_MIDDLE_TIP_EXT,
+        XR_HAND_JOINT_RING_TIP_EXT,
+        XR_HAND_JOINT_LITTLE_TIP_EXT,
+    };
+
+    float total = 0.0f;
+    for (uint32_t joint : FingerTips)
+    {
+        float distance = glm::length(JointVec3(handState, joint) - palm);
+        constexpr float ClosedDistance = 0.035f;
+        constexpr float OpenDistance = 0.110f;
+        total += 1.0f - std::clamp((distance - ClosedDistance) / (OpenDistance - ClosedDistance),
+                                   0.0f, 1.0f);
+    }
+
+    return total / static_cast<float>(FingerTips.size());
+}
+
+XrPosef InputManager::GetTrackedHandPose(Hand hand, const std::string& componentPath) const
+{
+    if (!IsHandTrackingActive(hand))
+    {
+        return GetControllerPose(hand);
+    }
+
+    const auto& handState = streamingHands_[HandIndex(hand)];
+    glm::quat orientation = BuildTrackedHandOrientation(hand, handState);
+
+    if (componentPath == "poke_ext/pose")
+    {
+        return MakePose(JointVec3(handState, XR_HAND_JOINT_INDEX_TIP_EXT), orientation);
+    }
+    if (componentPath == "pinch_ext/pose")
+    {
+        glm::vec3 thumbTip = JointVec3(handState, XR_HAND_JOINT_THUMB_TIP_EXT);
+        glm::vec3 indexTip = JointVec3(handState, XR_HAND_JOINT_INDEX_TIP_EXT);
+        return MakePose((thumbTip + indexTip) * 0.5f, orientation);
+    }
+    if (componentPath == "aim/pose")
+    {
+        return MakePose(JointVec3(handState, XR_HAND_JOINT_INDEX_PROXIMAL_EXT), orientation);
+    }
+
+    return MakePose(JointVec3(handState, XR_HAND_JOINT_PALM_EXT), orientation);
+}
+
+void InputManager::GenerateHandJoints(Hand hand, const glm::vec3& palmPos, const glm::quat& palmRot,
+                                       XrHandJointLocationEXT* joints, uint32_t jointCount) const
+{
+    if (jointCount < 26)
+    {
+        return;
+    }
+
+    constexpr XrSpaceLocationFlags validFlags = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT |
+                                                 XR_SPACE_LOCATION_POSITION_VALID_BIT |
+                                                 XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT |
+                                                 XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
+
+    // Helper to set a joint
+    auto setJoint = [&](int index, const glm::vec3& offset, float radius)
+    {
+        glm::vec3 worldPos = palmPos + palmRot * offset;
+        joints[index].locationFlags = validFlags;
+        joints[index].pose.orientation = {palmRot.x, palmRot.y, palmRot.z, palmRot.w};
+        joints[index].pose.position = {worldPos.x, worldPos.y, worldPos.z};
+        joints[index].radius = radius;
+    };
+
+    float side = (hand == Hand::Left) ? 1.0f : -1.0f;
+
+    // Joint indices (from XR_HAND_JOINT_PALM_EXT = 0 to LITTLE_TIP = 25)
+    // 0: Palm
+    setJoint(0, {0, 0, 0}, 0.025f);
+    // 1: Wrist
+    setJoint(1, {0, 0, 0.08f}, 0.02f);
+
+    // Finger base X offsets from palm center
+    float fingerX[5] = {
+        side * 0.03f,  // Thumb
+        side * 0.02f,  // Index
+        0.0f,          // Middle
+        side * -0.02f, // Ring
+        side * -0.04f, // Little
+    };
+
+    // Thumb (joints 2-5): metacarpal, proximal, distal, tip
+    float thumbZ[4] = {0.0f, -0.025f, -0.045f, -0.06f};
+    float thumbX[4] = {side * 0.02f, side * 0.035f, side * 0.045f, side * 0.05f};
+    for (int j = 0; j < 4; j++)
+    {
+        setJoint(2 + j, {thumbX[j], 0, thumbZ[j]}, 0.01f);
+    }
+
+    // Index through Little (4 fingers × 5 joints each: metacarpal, proximal, intermediate, distal, tip)
+    for (int finger = 0; finger < 4; finger++)
+    {
+        int baseIndex = 6 + finger * 5;
+        float baseX = fingerX[finger + 1];
+        float jointZ[5] = {-0.02f, -0.05f, -0.07f, -0.085f, -0.095f};
+        float radii[5] = {0.008f, 0.007f, 0.006f, 0.006f, 0.005f};
+
+        for (int j = 0; j < 5; j++)
+        {
+            setJoint(baseIndex + j, {baseX, 0, jointZ[j]}, radii[j]);
+        }
+    }
+}
+
+void InputManager::GetHandJointLocations(Hand hand, XrHandJointLocationEXT* joints, uint32_t jointCount) const
+{
+    if (IsStreaming() && IsHandTrackingActive(hand) &&
+        jointCount >= oxr::protocol::HAND_JOINT_COUNT)
+    {
+        constexpr XrSpaceLocationFlags validFlags = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT |
+                                                    XR_SPACE_LOCATION_POSITION_VALID_BIT |
+                                                    XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT |
+                                                    XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
+        const auto& handState = streamingHands_[HandIndex(hand)];
+        glm::quat orientation = BuildTrackedHandOrientation(hand, handState);
+        for (uint32_t i = 0; i < oxr::protocol::HAND_JOINT_COUNT; ++i)
+        {
+            const glm::vec4& joint = handState.joints[i];
+            joints[i].locationFlags = validFlags;
+            // MacXR Bridge: real per-joint orientation from the headset when the client sends it.
+            joints[i].pose = MakePose(glm::vec3(joint.x, joint.y, joint.z),
+                                      handState.hasRotations ? handState.rotations[i] : orientation);
+            joints[i].radius = joint.w;
+        }
+        return;
+    }
+
+    XrPosef controllerPose = GetControllerPose(hand);
+    glm::vec3 pos(controllerPose.position.x, controllerPose.position.y, controllerPose.position.z);
+    glm::quat rot(controllerPose.orientation.w, controllerPose.orientation.x,
+                   controllerPose.orientation.y, controllerPose.orientation.z);
+    GenerateHandJoints(hand, pos, rot, joints, jointCount);
+}
+
+// MacXR Bridge: the LOCAL reference space for session replays (x y z, then the yaw-only orientation qx qy qz qw).
+// A recording keeps the reference it was made with; a replay sets it back, so the replayed head and everything
+// placed from it land where they did, whatever the live headset's position was when this Play started.
+extern "C" {
+
+__attribute__((visibility("default")))
+int oxrsys_local_reference_get(float* out7)
+{
+    InputManager* input = InputManager::Active();
+    if (input == nullptr || out7 == nullptr) return 0;
+    glm::vec3 position;
+    glm::quat yaw;
+    const bool captured = input->GetLocalReference(position, yaw);
+    const float values[7] = {position.x, position.y, position.z, yaw.x, yaw.y, yaw.z, yaw.w};
+    std::memcpy(out7, values, sizeof(values));
+    return captured ? 1 : 0;
+}
+
+__attribute__((visibility("default")))
+int oxrsys_local_reference_set(const float* in7)
+{
+    InputManager* input = InputManager::Active();
+    if (input == nullptr || in7 == nullptr) return 0;
+    input->SetLocalReference(glm::vec3(in7[0], in7[1], in7[2]), glm::quat(in7[6], in7[3], in7[4], in7[5]));
+    return 1;
+}
+
+// For sessions recorded without a reference: the head pose of the tape's first packet (deterministic).
+__attribute__((visibility("default")))
+int oxrsys_local_reference_from_tape()
+{
+    InputManager* input = InputManager::Active();
+    oxr::protocol::TrackingPacket packet = {};
+    if (input == nullptr || !oxrsys::tracking_tape::FirstPacket(&packet, sizeof(packet))) return 0;
+    input->SetLocalReference(glm::vec3(packet.headPosition[0], packet.headPosition[1], packet.headPosition[2]),
+                             glm::quat(packet.headOrientation[3], packet.headOrientation[0],
+                                       packet.headOrientation[1], packet.headOrientation[2]));
+    return 1;
+}
+
+} // extern "C"
