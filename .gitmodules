@@ -1,0 +1,4 @@
+[submodule "oxrsys"]
+	path = oxrsys
+	url = https://github.com/edsonsims/oxrsys.git
+	branch = macxr-bridge

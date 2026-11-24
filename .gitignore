@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# Local automation: runner queue and task logs
+.runner/
+logs/
+
+# Build outputs
+mic-driver/build/
+unity-tools/room.json
