@@ -4,13 +4,13 @@ MacXR Bridge has four parts:
 
 | Part | Where | Language | What it does |
 |---|---|---|---|
-| macOS OpenXR runtime | `oxrsys/runtime/` (submodule) | C++20, Objective-C++ | The OpenXR runtime Unity loads. Encodes the app's frames (VideoToolbox HEVC), receives tracking, proxies spatial calls, receives camera, depth and microphone |
-| Quest client app | `oxrsys/clients/android-vr/` (submodule) | C++, Java (NDK) | Decodes and shows the frames with reprojection, sends tracking, runs spatial calls on the headset's own OpenXR, captures camera, depth and microphone, plays the app's audio |
+| macOS OpenXR runtime | `oxrsys/runtime/` | C++20, Objective-C++ | The OpenXR runtime Unity loads. Encodes the app's frames (VideoToolbox HEVC), receives tracking, proxies spatial calls, receives camera, depth and microphone |
+| Quest client app | `oxrsys/clients/android-vr/` | C++, Java (NDK) | Decodes and shows the frames with reprojection, sends tracking, runs spatial calls on the headset's own OpenXR, captures camera, depth and microphone, plays the app's audio |
 | Unity package | `unity-package/com.macxrbridge.xr/` | C# | Editor windows and commands, camera feed into MRUK, raycast fallbacks, recording, spectator, sessions and tests |
 | Microphone driver | `mic-driver/` | C (AudioServerPlugIn) | The "Headset Microphone (MacXR Bridge)" Core Audio input device |
 
-The runtime and the Quest app are a fork of [OXRSys](https://github.com/demonixis/oxrsys), branch `macxr-bridge`.
-OXRSys already streamed OpenXR apps from macOS to a Quest with head tracking, hands and passthrough. The fork adds
+The runtime and the Quest app are a fork of [OXRSys](https://github.com/demonixis/oxrsys), kept in `oxrsys/` with its
+full history (see [Working with upstream OXRSys](#working-with-upstream-oxrsys)). OXRSys already streamed OpenXR apps from macOS to a Quest with head tracking, hands and passthrough. The fork adds
 what the Meta XR SDK needs for mixed reality development, and the tools.
 
 ## Data flow
@@ -134,3 +134,21 @@ second copy would give it a separate state):
 | `/Library/Audio/Plug-Ins/HAL/MacXRBridgeMic.driver` | Microphone driver |
 | `<project>/.macxr/` | Command bridge, Console mirror, status, debug images |
 | `<project>/Recordings/`, `Sessions/`, `TestResults/` | Videos, sessions, test reports |
+
+## Working with upstream OXRSys
+
+`oxrsys/` is a git subtree: the OXRSys history and the MacXR Bridge changes on top of it, in this one repository.
+
+Pull new upstream changes:
+
+```bash
+git subtree pull --prefix=oxrsys https://github.com/demonixis/oxrsys.git main
+```
+
+Send a fix back upstream: extract the folder's history to a branch, push it to your own fork of OXRSys and open a
+pull request from there.
+
+```bash
+git subtree split --prefix=oxrsys -b oxrsys-upstream
+git push https://github.com/<you>/oxrsys.git oxrsys-upstream
+```

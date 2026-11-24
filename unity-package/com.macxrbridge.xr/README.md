@@ -41,7 +41,7 @@ Requires Unity 6000.0, the OpenXR plug-in, Meta XR Core SDK 207 and MRUK 207.
 
 ## License
 
-MIT. The runtime and Quest client (an OXRSys fork) are MPL-2.0.
+MIT. The runtime and Quest client (`oxrsys/`, based on OXRSys) are MPL-2.0.
 
 > MacXR Bridge is an independent project. It is not affiliated with, sponsored or endorsed by Meta Platforms, Inc.
 > Meta, Meta Quest, Quest Link and Air Link are trademarks of Meta Platforms, Inc., used here only to describe

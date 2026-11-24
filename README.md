@@ -60,7 +60,7 @@ Meta XR Core SDK and MRUK 207, and a Quest 3 in developer mode. The prerequisite
 missing.
 
 ```bash
-git clone --recursive https://github.com/edsonsims/macxr-bridge.git
+git clone https://github.com/edsonsims/macxr-bridge.git
 cd macxr-bridge
 zsh scripts/00-check-prereqs.sh                          # read-only: lists what's missing and how to get it
 zsh scripts/install.sh                                   # runtime, Quest app, OpenXR registration, microphone, ffmpeg
@@ -144,7 +144,7 @@ Measured on a Quest 3 over USB: 72 Hz, 32–40 Mbps HEVC, about 11 ms from frame
 
 | Path | What |
 |---|---|
-| `oxrsys/` | Submodule: the OXRSys fork (branch `macxr-bridge`): the macOS runtime and the Quest client app |
+| `oxrsys/` | The macOS runtime and the Quest client app: OXRSys with the MacXR Bridge changes, merged in with its full history (MPL-2.0) |
 | `unity-package/com.macxrbridge.xr/` | The Unity package: Editor windows, commands, recording, sessions, tests |
 | `mic-driver/` | The Core Audio driver for the headset microphone |
 | `scripts/` | Install, build, reconnect and check scripts, plus a task runner for automation |

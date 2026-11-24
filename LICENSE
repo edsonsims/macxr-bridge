@@ -1,5 +1,5 @@
-This license covers everything in this repository except the oxrsys/ submodule (the runtime and Quest client,
-a fork of OXRSys), which is under the Mozilla Public License 2.0: see oxrsys/LICENSE.
+This license covers everything in this repository except the oxrsys/ folder (the runtime and Quest client,
+based on OXRSys), which is under the Mozilla Public License 2.0: see oxrsys/LICENSE.
 
 MIT License
 

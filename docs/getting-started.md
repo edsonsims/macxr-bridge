@@ -26,14 +26,12 @@ It takes about 15 minutes, most of it compiling.
 
 ## 2. Get the code
 
-The runtime and the Quest app live in a submodule (`oxrsys/`), so clone recursively:
-
 ```bash
-git clone --recursive https://github.com/edsonsims/macxr-bridge.git
+git clone https://github.com/edsonsims/macxr-bridge.git
 cd macxr-bridge
 ```
 
-Already cloned without `--recursive`? Run `git submodule update --init`.
+Everything is in this one repository, including the runtime and the Quest app (`oxrsys/`).
 
 ## 3. Check the prerequisites
 
@@ -161,7 +159,6 @@ the existing file and sets:
 
 ```bash
 git pull
-git submodule update --init
 ```
 
 Then quit Unity, rebuild the runtime (`zsh scripts/10-build-runtime.sh`) and, if the Quest app changed, rebuild and
