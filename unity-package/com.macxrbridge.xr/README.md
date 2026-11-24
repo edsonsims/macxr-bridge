@@ -1,71 +1,48 @@
-# MacXR Bridge
+# MacXR Bridge (Unity package)
 
-Unity Play Mode on a **Meta Quest 3 from a Mac** — what Quest Link does on Windows, plus developer tools Quest Link
-does not have. Built on a fork of [OXRSys](https://github.com/demonixis/oxrsys) (macOS OpenXR runtime that streams to
-the Quest), with the Meta XR SDK 207 running unchanged in the Editor.
+The Unity side of [MacXR Bridge](https://github.com/edsonsims/macxr-bridge): Unity Play Mode on a Meta Quest 3 from an
+Apple Silicon Mac, as Quest Link does on Windows, plus developer tools Quest Link doesn't have.
 
-## What works in Play Mode
-
-| Quest Link parity | |
-|---|---|
-| Passthrough (`XR_FB_passthrough`) | official layer, styles |
-| Spatial anchors | create, save, load, erase (proxied to the headset) |
-| Scene / MRUK | real room with semantic labels (walls, floor, table, screen…) and global mesh |
-| Passthrough Camera API (PCA) | the real Quest camera, 1280×960 @ 30 fps, calibrated pose and intrinsics |
-| Environment depth + raycast | `EnvironmentRaycastManager` works in the Editor (`XR_META_environment_raycast` answered with the relayed depth) |
-| Headset audio | the app's mix plays in the Quest |
-| **Headset microphone** | "Headset Microphone (MacXR Bridge)" audio device, default input while the app runs — Unity's `Microphone` records your voice from the headset |
-| Microgestures | `XR_META_hand_tracking_microgestures` |
-| Display refresh rate, color space, passthrough preferences | `XR_FB_display_refresh_rate`, `XR_FB_color_space`, `XR_META_passthrough_preferences` |
-| USB **and Wi-Fi** | room, anchors, camera, depth, audio and mic also over Wi-Fi (Air Link style) |
-
-| Beyond Quest Link | |
-|---|---|
-| **Mixed reality recording** | real camera + your app rendered at the camera's pose/intrinsics + app audio + your voice → MP4 (hardware H.264) |
-| **Live spectator** | Editor window and an MJPEG stream on the local network (browser, phone, TV, OBS Browser Source) |
-| **Session record & replay** | record camera, depth, room and the full tracking stream (head, hands, controllers, microgestures); replay **without the headset** — the runtime feeds the recorded tracking through OpenXR, so the whole app reacts as if you were wearing it. Replays are hermetic: the recorded LOCAL reference, tracking space and depth come back, whatever the live headset is doing |
-| **Replay timeline** | pause, seek, frame step, 0.25×–2× |
-| **Perception tests** | `baseline` a session, then `test` it: classes the detector must see, where labels must land (cm tolerance), forbidden classes. Deterministic lockstep with the detector; JUnit report (`TestResults/macxr-sessions.xml`) |
-| **In-headset debug overlay** | detector rays (green = landed, red = missed) with class/distance, environment depth points |
-| **Performance HUD** | transport, bitrate, latency (Mac + Quest), decode/encode times, headset fps, battery, temperature, camera/depth/mic |
+This package is the Editor half. It needs the MacXR Bridge runtime and Quest app, installed by `scripts/install.sh`
+in the repository. Start with the repository's README.
 
 ## Install
 
-1. `macxr-bridge/scripts/install.sh` — builds the runtime, the Quest client (installs it over USB), registers the
-   OpenXR runtime, installs the microphone driver (asks for the Mac password once) and ffmpeg.
-2. Add this package to your project (`Packages/manifest.json`):
-   `"com.macxrbridge.xr": "file:<path>/macxr-bridge/unity-package/com.macxrbridge.xr"`
-3. **Window ▸ MacXR Bridge ▸ Setup & Diagnostics** checks every piece and fixes what is missing (it also points
-   this Editor at the runtime, no special launch needed). **Window ▸ MacXR Bridge ▸ Panel** has everything else.
+1. Install the runtime: `zsh scripts/install.sh` in the repository.
+2. Add this package: `zsh scripts/60-unity-add-package.sh /path/to/YourUnityProject`, or add it to
+   `Packages/manifest.json` by hand:
+   `"com.macxrbridge.xr": "file:<path>/macxr-bridge/unity-package/com.macxrbridge.xr"`.
+3. **Window ▸ MacXR Bridge ▸ Setup & Diagnostics** checks every piece and fixes what's missing.
+4. Open the OXRSys app on the Quest and press **Play**.
 
-Requires: Apple Silicon Mac, Unity 6000.0, Meta XR SDK (core, MRUK) 207, OpenXR plug-in, Quest 3 in developer mode.
+Requires Unity 6000.0, the OpenXR plug-in, Meta XR Core SDK 207 and MRUK 207.
 
-## Connect your app
+## What's in it
 
-The package is generic. App-specific bits go through `MacXRBridge.EditorTools.BridgeHooks` (Editor code in your project):
-`WireDetection` (turn on your real detection when the Quest camera arrives), `ReportPlacedBatch` (where your app placed
-things — used by tests and the debug overlay), `IgnoreCollider`, `ApplyAppThreshold`, and `DetectNow` / `HoldDetection`
-/ `DetectionStarted` for deterministic tests. See `HelloWorldBridgeHooks.cs` in the Hello World project for a complete
-example (~100 lines).
+- **Window ▸ MacXR Bridge ▸ Panel**: status, headset microphone, camera, depth and room, the headset debug view, mixed
+  reality recording, and sessions with a replay timeline and tests.
+- **Window ▸ MacXR Bridge ▸ Setup & Diagnostics**: checks the runtime, this Editor's `XR_RUNTIME_JSON`, the
+  project's XR settings, the Quest app, the microphone driver and ffmpeg.
+- **Window ▸ MacXR Bridge ▸ Spectator (Mixed Reality)**: the real camera with your app composited on top, live.
+- Automatic in Play: the Quest camera feeds MRUK's `PassthroughCameraAccess`, and your app's audio plays in the
+  headset.
+- A command bridge (`<project>/.macxr/cmd/*.cmd`) that exposes every tool to scripts and AI coding agents.
+- `BridgeHooks`: optional extension points for your app (detection wiring, placements for tests, lockstep).
+- `BridgeSessionTests.RunAllFromCommandLine`: runs the perception tests from the command line.
 
-## Commands
+## Documentation
 
-Everything in the panel is also a command for automation (file bridge `.macxr/cmd/N.cmd`):
-`record start [name] [nomic]` · `record stop` · `session rec [name]` · `session play [name] [loop]` ·
-`session pause|resume|seek <s>|step [n]|speed <x>` · `session baseline [name]` · `session test [name|all]` ·
-`debug on|depth|off` · `hud on|off` · `stream on|off` · `mic [test]` · `audio beep` · `room-load` · `depth`.
-
-Command line test run (opens the Editor, runs every session that has `expect.json`, exits with the result):
-
-```
-Unity -projectPath <project> -executeMethod MacXRBridge.EditorTools.BridgeSessionTests.RunAllFromCommandLine
-```
+- [Features](https://github.com/edsonsims/macxr-bridge/blob/main/docs/features.md)
+- [Beyond Quest Link](https://github.com/edsonsims/macxr-bridge/blob/main/docs/beyond-quest-link.md)
+- [Sessions and tests](https://github.com/edsonsims/macxr-bridge/blob/main/docs/sessions-and-tests.md)
+- [Connect your app](https://github.com/edsonsims/macxr-bridge/blob/main/docs/connect-your-app.md)
+- [Commands and automation](https://github.com/edsonsims/macxr-bridge/blob/main/docs/commands.md)
+- [Troubleshooting](https://github.com/edsonsims/macxr-bridge/blob/main/docs/troubleshooting.md)
 
 ## License
 
+MIT. The runtime and Quest client (an OXRSys fork) are MPL-2.0.
+
 > MacXR Bridge is an independent project. It is not affiliated with, sponsored or endorsed by Meta Platforms, Inc.
-> Meta, Meta Quest, Quest Link and Air Link are trademarks of Meta Platforms, Inc., used here only to describe compatibility.
-> Built on [OXRSys](https://github.com/demonixis/oxrsys) by Yannick Comte and contributors (MPL-2.0).
-
-
-Unity package: MIT. Runtime and Quest client (OXRSys fork): MPL-2.0. Microphone driver: MIT.
+> Meta, Meta Quest, Quest Link and Air Link are trademarks of Meta Platforms, Inc., used here only to describe
+> compatibility. Built on [OXRSys](https://github.com/demonixis/oxrsys) by Yannick Comte and contributors (MPL-2.0).

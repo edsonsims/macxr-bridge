@@ -1,10 +1,12 @@
 #!/bin/zsh
 # End-to-end check of MacXR Bridge with Unity in Play mode and the Quest on USB.
 # Reconnects the Quest app, loads the room, checks depth, environment raycast and detection,
-# and prints a summary. Usage (Unity open and in Play mode): zsh macxr-bridge/scripts/90-verify-bridge.sh
+# and prints a summary. Usage (Unity open and in Play mode): zsh scripts/90-verify-bridge.sh /path/to/UnityProject
+# (or set MXB_UNITY_PROJECT; without either it looks for ../hello-world/unity/HelloWorld, the project it was built with).
 set -uo pipefail
 source "$(dirname "${(%):-%x}")/common.sh"
-BRIDGE_DIR="${MXB_ROOT}/../hello-world/unity/HelloWorld/.macxr"
+project="${1:-${MXB_UNITY_PROJECT:-${MXB_ROOT}/../hello-world/unity/HelloWorld}}"
+BRIDGE_DIR="${project}/.macxr"
 [[ -d "$BRIDGE_DIR/cmd" ]] || { fail "Unity bridge not found at $BRIDGE_DIR (is the project open?)"; exit 1; }
 
 # Sends a command to the Editor's CommandBridge and waits for the reply (up to $2 seconds).

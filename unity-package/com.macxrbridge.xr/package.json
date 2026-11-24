@@ -2,9 +2,21 @@
   "name": "com.macxrbridge.xr",
   "version": "0.1.0",
   "displayName": "MacXR Bridge",
-  "description": "Unity Play Mode on a Meta Quest 3 from a Mac, like Quest Link on Windows — passthrough, anchors, MRUK room with labels, passthrough camera (PCA), environment depth and raycast, headset audio and microphone, microgestures — plus tools Quest Link does not have: mixed reality recording, live spectator stream, session record & replay (no headset needed) with deterministic perception tests, an in-headset debug overlay and performance HUD. Needs the OXRSys runtime fork from macxr-bridge/oxrsys.",
+  "description": "Unity Play Mode on a Meta Quest 3 from an Apple Silicon Mac, like Quest Link on Windows: passthrough, anchors, MRUK room with labels, the passthrough camera (PCA), environment depth and raycasts, headset audio and microphone, microgestures. Plus tools Quest Link doesn't have: session record and replay without the headset, deterministic perception tests, mixed reality recording, a live spectator stream, an in-headset debug view and an Editor command bridge for scripts and agents. Needs the MacXR Bridge runtime: https://github.com/edsonsims/macxr-bridge",
   "unity": "6000.0",
-  "author": { "name": "Edson Henrique" },
-  "keywords": ["quest", "openxr", "macos", "play mode", "mixed reality", "passthrough", "mruk"],
+  "author": {
+    "name": "Edson Henrique"
+  },
+  "documentationUrl": "https://github.com/edsonsims/macxr-bridge#readme",
+  "licensesUrl": "https://github.com/edsonsims/macxr-bridge/blob/main/LICENSE",
+  "keywords": [
+    "quest",
+    "openxr",
+    "macos",
+    "play mode",
+    "mixed reality",
+    "passthrough",
+    "mruk"
+  ],
   "license": "MIT"
 }

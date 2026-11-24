@@ -1,3 +1,9 @@
+> **About this log.** This is the raw development log of MacXR Bridge, written while building it in November 2026 for
+> Lumi (working title "Hello World"), a mixed reality language app. It started under the Portuguese working name
+> "Link para Mac". Paths like `hello-world/` and `macxr-bridge/` refer to the original `meta-vr` workspace, where this
+> repository was a folder. Numbers are measurements from those sessions. For how to use the bridge today, start with the
+> [README](../README.md).
+
 # MacXR Bridge — research and plan (Nov 7, 2026)
 
 Goal (Edson): a macOS equivalent of Meta Quest Link on Windows: press Play in the Unity Editor → the app shows up on the Quest 3 with real tracking, hands and passthrough.
@@ -34,7 +40,7 @@ Decision (Nov 7): **our own fork**, built on OXRSys. Renamed on Nov 8 from its P
 - **Phase 1 (1–2 days, before Nov 18):** fork; build the runtime, Home and the Quest client; Unity 6 + Meta XR SDK 207 in Play Mode on the Quest 3 (head, hands, passthrough). Room export/import tool (MRUK JSON). Swappable camera source in the Editor. `XR_FB_passthrough` stubs if OVRPlugin requires them.
 - **Phase 2 (after Nov 18):** Quest camera relay (Camera2 → H.264 → Mac → CoreMediaIO virtual camera + intrinsics/pose), scene and anchor relay over channel 9948, microgestures, headset audio, one-click installer, docs.
 
-## Structure created on Nov 7 (root folder `/Users/edsonhenrique/Documents/GitHub/meta-vr`)
+## Structure created on Nov 7 (root folder `meta-vr/`)
 - `docs/` — mirror of these project docs.
 - `hello-world/` — the app's Unity project (still empty).
 - `macxr-bridge/oxrsys/` — OXRSys clone (main at `a87f56f`, after the 1.3.0 tag), remote `upstream`, branch `macxr-bridge`.

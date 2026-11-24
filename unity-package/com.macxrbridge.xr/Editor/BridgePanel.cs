@@ -23,11 +23,26 @@ namespace MacXRBridge.EditorTools
         double _nextRepaint;
         static readonly double[] Speeds = { 0.25, 0.5, 1, 2 };
 
+        static string _packageRoot;
+
         public static string BridgeRoot
         {
             get
             {
                 string fallback = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", "..", "..", "macxr-bridge"));
+                // The repo root is two levels above this package (<root>/unity-package/com.macxrbridge.xr).
+                if (_packageRoot == null)
+                {
+                    _packageRoot = "";
+                    try
+                    {
+                        var info = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(BridgePanel).Assembly);
+                        if (info != null && !string.IsNullOrEmpty(info.resolvedPath))
+                            _packageRoot = Path.GetFullPath(Path.Combine(info.resolvedPath, "..", ".."));
+                    }
+                    catch { _packageRoot = ""; }
+                }
+                if (_packageRoot != "" && Directory.Exists(Path.Combine(_packageRoot, "scripts"))) fallback = _packageRoot;
                 return EditorPrefs.GetString("MacXRBridge.Root", fallback);
             }
             set => EditorPrefs.SetString("MacXRBridge.Root", value);

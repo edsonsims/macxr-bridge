@@ -1,12 +1,12 @@
 # unity-tools
 
-MacXR Bridge Unity scripts. Copy them into the project's `Assets/MacXRBridge/`.
+A fallback from before the live room worked. With the current runtime, MRUK loads your real room in Play Mode
+directly (`room-load`), so you normally don't need this.
 
-- `RoomJsonExporter.cs` — on the headset, saves the real MRUK room to `room.json` (persistentDataPath).
-  Pull it with `scripts/70-pull-room-json.sh <package name>` and, in the Editor, set up the MRUK component:
-  Scene Settings → Data Source = **Device With Json Fallback** → Scene Jsons = `room.json`.
-  That way, on the Mac (where the runtime doesn't deliver the scene yet), the Editor uses your actual room.
+- `RoomJsonExporter.cs`: in a build on the headset, saves the real MRUK room to `room.json` (in `persistentDataPath`).
+  Copy it into your project's `Assets/`, build, run it once on the headset, then pull the file with
+  `scripts/70-pull-room-json.sh <your app's package name>`. In the Editor, set the MRUK component's
+  Scene Settings ▸ Data Source to **Device With Json Fallback** and Scene Jsons to `room.json`.
 
-Planned (Phase 1):
-- `PassthroughCameraSource` — swappable frame source for the Editor (the Mac's webcam or frames recorded on the Quest),
-  so the object detection pipeline can run on the Mac until the camera relay exists.
+Useful when you want the same room without a headset connected. Recorded sessions (`session rec`) also save the room
+and bring it back on replay.
