@@ -144,7 +144,7 @@ Measured on a Quest 3 over USB: 72 Hz, 32–40 Mbps HEVC, about 11 ms from frame
 
 | Path | What |
 |---|---|
-| `oxrsys/` | The macOS runtime and the Quest client app: OXRSys with the MacXR Bridge changes, merged in with its full history (MPL-2.0) |
+| `oxrsys/` | The macOS runtime and the Quest client app: OXRSys (imported at upstream commit `a87f56f`) with the MacXR Bridge changes on top (MPL-2.0) |
 | `unity-package/com.macxrbridge.xr/` | The Unity package: Editor windows, commands, recording, sessions, tests |
 | `mic-driver/` | The Core Audio driver for the headset microphone |
 | `scripts/` | Install, build, reconnect and check scripts, plus a task runner for automation |

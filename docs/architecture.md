@@ -9,8 +9,8 @@ MacXR Bridge has four parts:
 | Unity package | `unity-package/com.macxrbridge.xr/` | C# | Editor windows and commands, camera feed into MRUK, raycast fallbacks, recording, spectator, sessions and tests |
 | Microphone driver | `mic-driver/` | C (AudioServerPlugIn) | The "Headset Microphone (MacXR Bridge)" Core Audio input device |
 
-The runtime and the Quest app are a fork of [OXRSys](https://github.com/demonixis/oxrsys), kept in `oxrsys/` with its
-full history (see [Working with upstream OXRSys](#working-with-upstream-oxrsys)). OXRSys already streamed OpenXR apps from macOS to a Quest with head tracking, hands and passthrough. The fork adds
+The runtime and the Quest app are a fork of [OXRSys](https://github.com/demonixis/oxrsys), imported into `oxrsys/`
+(see [Working with upstream OXRSys](#working-with-upstream-oxrsys)). OXRSys already streamed OpenXR apps from macOS to a Quest with head tracking, hands and passthrough. The fork adds
 what the Meta XR SDK needs for mixed reality development, and the tools.
 
 ## Data flow
@@ -137,18 +137,23 @@ second copy would give it a separate state):
 
 ## Working with upstream OXRSys
 
-`oxrsys/` is a git subtree: the OXRSys history and the MacXR Bridge changes on top of it, in this one repository.
+`oxrsys/` starts from an import of OXRSys at upstream commit `a87f56f` (just after the 1.3.0 release); the MacXR Bridge
+changes are the commits on top of it in this repository.
 
-Pull new upstream changes:
+Bring in later upstream changes by applying the upstream diff since the last synced commit:
 
 ```bash
-git subtree pull --prefix=oxrsys https://github.com/demonixis/oxrsys.git main
+git fetch https://github.com/demonixis/oxrsys.git main
+git diff a87f56f FETCH_HEAD | git apply -3 --directory=oxrsys
 ```
 
-Send a fix back upstream: extract the folder's history to a branch, push it to your own fork of OXRSys and open a
-pull request from there.
+Resolve any conflicts, commit, and put the new upstream commit in the message: it's the starting point of the next
+sync.
+
+Send a fix back upstream as patches, then open a pull request from your own fork of OXRSys:
 
 ```bash
-git subtree split --prefix=oxrsys -b oxrsys-upstream
-git push https://github.com/<you>/oxrsys.git oxrsys-upstream
+git format-patch --relative=oxrsys -o /tmp/oxrsys-patches <first-commit>^..<last-commit> -- oxrsys
+# in a clone of your fork of demonixis/oxrsys:
+git am /tmp/oxrsys-patches/*.patch
 ```
