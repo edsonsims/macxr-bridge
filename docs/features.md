@@ -145,6 +145,8 @@ These go beyond what Quest Link offers; [beyond-quest-link.md](beyond-quest-link
 
 ### Mixed reality video and spectator
 
+<img src="media/mixed-reality-recording.gif" width="560" alt="The headset camera with the app's menu and floating objects rendered into the room">
+
 - **Recording** (`record start [name] [nomic]`, `record stop`): each real camera frame is the background, and your app
   is rendered on top by a virtual camera at the real camera's pose and with its intrinsics (an off-axis projection
   through the principal point), so virtual objects sit exactly where they appear in the headset. The app's audio and
@@ -157,6 +159,8 @@ These go beyond what Quest Link offers; [beyond-quest-link.md](beyond-quest-link
   Browser Source. No authentication: trusted networks only.
 
 ### Headset debug view
+
+<img src="media/debug-view.gif" width="560" alt="A green ray from the head to the detected laptop, labeled with class, score and distance, and depth points on the desk">
 
 `debug on|off|depth|nodepth`: draws into the scene, so you see it in the headset, one ray per detection box. A green ray
 ends where the label landed; a red one shows a detection that hit nothing, labeled with class, score and distance.

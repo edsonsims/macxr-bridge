@@ -96,6 +96,8 @@ want to version your test sessions).
 
    Rows that pass hide their buttons; the others offer Install, Rebuild or Fix.
 
+   <img src="media/setup-diagnostics.png" width="440" alt="The Setup and Diagnostics window with its checks">
+
 ## 7. First Play
 
 1. Put on the Quest and open **Library ▸ Unknown Sources ▸ OXRSys**. It shows a waiting screen.

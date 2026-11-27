@@ -3,6 +3,8 @@
 Record a real mixed reality session once with the headset. Then replay it in Play Mode as often as you like without
 wearing it, and turn it into an automated test of your app's perception.
 
+<p align="center"><img src="media/replay-without-headset.gif" width="800" alt="A recorded session replayed in Play Mode with the headset off, next to the Panel's replay timeline"></p>
+
 Everything here is in the **Sessions** section of **Window ▸ MacXR Bridge ▸ Panel**, and available as `session …`
 commands (see [commands.md](commands.md)).
 
@@ -77,6 +79,16 @@ Edit the file as you like; it's the test's specification.
 `session test [name|all] [realtime]` replays and checks every expectation. The report shows each label's median
 position and how far it moved, and how many raycasts fell back to the Editor raycast. Results also go to
 `TestResults/macxr-sessions.xml` (JUnit). `session report` shows the last report (or the progress of a running test).
+A real run:
+
+```text
+Session tests: 1/1 passed
+  ✓ gestos-20261108-164954 (65 s)
+      ✓ detects laptop: 45 boxes (minimum 22)
+      ✓ detects tv monitor: 7 boxes (minimum 3)
+      ✓ label laptop: 0 cm from expected (tolerance 15 cm; median of 45 at (-0.16, 1.24, 0.72), expected (-0.16, 1.24, 0.72))
+      ✓ label tv monitor: 0 cm from expected (tolerance 15 cm; median of 7 at (0.01, 1.12, 0.26), expected (0.01, 1.12, 0.26))
+```
 
 ### Deterministic by design
 

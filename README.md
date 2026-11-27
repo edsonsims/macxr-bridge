@@ -6,6 +6,12 @@ Press Play in Unity on an Apple Silicon Mac and your app runs on a Meta Quest 3 
 passthrough, your real room, the headset camera and depth. Then record that session once and keep testing it in Play
 Mode with the headset sitting on your desk.
 
+<p align="center">
+  <img src="docs/media/replay-without-headset.gif" width="800" alt="A recorded session replayed in Unity Play Mode with the headset off: the app in the real room on the left, the MacXR Bridge Panel's replay timeline on the right">
+</p>
+<p align="center"><sub>Headset off: a session recorded once with the Quest 3, replayed in Play Mode on the Mac. Left, the mixed reality view
+the bridge records; right, the Panel's replay timeline (pause, frame step, 0.5×). Shown with Lumi, the app it was built with.</sub></p>
+
 > MacXR Bridge is an independent project. It is not affiliated with, sponsored or endorsed by Meta Platforms, Inc.
 > Meta, Meta Quest, Quest Link and Air Link are trademarks of Meta Platforms, Inc., used here only to describe
 > compatibility. Built on [OXRSys](https://github.com/demonixis/oxrsys) by Yannick Comte and contributors (MPL-2.0).
@@ -32,6 +38,28 @@ would over Link.
 | In-headset perception debug view: a ray per detection (green = landed, red = missed), live depth points | No | **Yes** |
 | Drive the Editor from scripts or AI coding agents (Play, menus, room, depth, recording, tests…) | No | **Yes**, file-based command bridge |
 | Open source runtime and wire protocol you can extend | No | **Yes** |
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/media/debug-view.gif" alt="Headset debug view: a green ray from the head to the detected laptop with its class, score and distance, and the depth sensor's points on the desk"></td>
+    <td width="50%"><img src="docs/media/mixed-reality-recording.gif" alt="Mixed reality recording: the headset camera with the app's floating objects and menu rendered into the room"></td>
+  </tr>
+  <tr>
+    <td><b>Headset debug view</b>: a ray per detection (green when the label landed) and the points the depth sensor sees.</td>
+    <td><b>Mixed reality recording</b>: the headset camera with your app rendered from the camera's exact pose, straight to MP4.</td>
+  </tr>
+</table>
+
+**Perception tests** replay a recorded session in lockstep with your detector and check what it found. A real run:
+
+```text
+Session tests: 1/1 passed
+  ✓ gestos-20261108-164954 (65 s)
+      ✓ detects laptop: 45 boxes (minimum 22)
+      ✓ detects tv monitor: 7 boxes (minimum 3)
+      ✓ label laptop: 0 cm from expected (tolerance 15 cm; median of 45 at (-0.16, 1.24, 0.72), expected (-0.16, 1.24, 0.72))
+      ✓ label tv monitor: 0 cm from expected (tolerance 15 cm; median of 7 at (0.01, 1.12, 0.26), expected (0.01, 1.12, 0.26))
+```
 
 Details, sources and a comparison with the Meta XR Simulator: [docs/beyond-quest-link.md](docs/beyond-quest-link.md).
 
@@ -75,6 +103,9 @@ Then:
 1. Quit and reopen Unity Hub and Unity, so they pick up the new OpenXR runtime.
 2. In Unity, open **Window ▸ MacXR Bridge ▸ Setup & Diagnostics** and fix anything that isn't green. It can
    configure the project's XR settings for you.
+
+   <img src="docs/media/setup-diagnostics.png" width="440" alt="The Setup and Diagnostics window: folder, runtime, this Unity, project, Quest, headset microphone and ffmpeg checks">
+
 3. On the Quest, open **Library ▸ Unknown Sources ▸ OXRSys**. It waits for the Mac.
 4. Press **Play**. Your app shows up in the headset.
 
